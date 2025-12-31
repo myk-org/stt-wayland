@@ -8,7 +8,24 @@ Wayland-native Speech-to-Text daemon using Google Gemini API.
 - **PipeWire/PulseAudio**: Supports both `pw-record` and `parecord` for audio recording
 - **Signal-based control**: Toggle recording via `SIGUSR1` signal
 - **State machine**: Clean state transitions (IDLE → RECORDING → TRANSCRIBING → TYPING)
+- **Desktop notifications**: Visual feedback for each state transition
 - **Google Gemini**: Fast transcription using Gemini 2.0 Flash
+
+## Requirements
+
+### Python
+- **Python 3.14+** is required
+
+### Package Manager
+- **[uv](https://docs.astral.sh/uv/)** - Fast Python package manager and installer
+
+### System Tools
+- **wtype** - Wayland text input simulation
+- **wl-clipboard** - Wayland clipboard utilities (provides `wl-copy`)
+- **pipewire-utils** or **pulseaudio-utils** - Audio recording (`pw-record` or `parecord`)
+- **libnotify** - Desktop notification support (provides `notify-send`)
+
+See the [Dependencies](#dependencies) section below for installation commands.
 
 ## Installation
 
@@ -70,13 +87,13 @@ export GEMINI_API_KEY=your_api_key_here
 ### System packages (Fedora/RHEL)
 
 ```bash
-sudo dnf install pipewire-utils wtype wl-clipboard
+sudo dnf install pipewire-utils wtype wl-clipboard libnotify
 ```
 
 ### System packages (Debian/Ubuntu)
 
 ```bash
-sudo apt install pipewire-audio wtype wl-clipboard
+sudo apt install pipewire-audio wtype wl-clipboard libnotify-bin
 ```
 
 ## Usage
@@ -119,10 +136,12 @@ kill -TERM $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 
 ## Workflow
 
-1. **First SIGUSR1**: Start recording (IDLE → RECORDING)
-2. **Second SIGUSR1**: Stop recording and transcribe (RECORDING → TRANSCRIBING → TYPING)
-3. **Auto-type**: Transcribed text is automatically typed using `wtype`
+1. **First SIGUSR1**: Start recording (IDLE → RECORDING) - notification shown
+2. **Second SIGUSR1**: Stop recording and transcribe (RECORDING → TRANSCRIBING) - notification shown
+3. **Auto-type**: Transcribed text is automatically typed using `wtype` - success notification shown
 4. **Return to IDLE**: Ready for next recording
+
+Desktop notifications appear at each stage to provide visual feedback on the current state.
 
 ## State Machine
 

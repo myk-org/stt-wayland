@@ -15,7 +15,13 @@ if TYPE_CHECKING:
 
 from .audio import AudioRecorder
 from .config import Config
-from .output import type_text
+from .output import (
+    notify_error,
+    notify_recording_started,
+    notify_recording_stopped,
+    notify_transcription_complete,
+    type_text,
+)
 from .state_machine import Event, State, StateMachine
 from .transcription import GeminiTranscriber
 
@@ -143,8 +149,10 @@ class STTDaemon:
         try:
             self.recorder.start_recording()
             self.state_machine.set_state(State.RECORDING)
+            notify_recording_started()
         except Exception:
             self._logger.exception("Failed to start recording")
+            notify_error("Failed to start recording")
             self.state_machine.transition(Event.ERROR)
 
     def _stop_recording(self) -> None:
@@ -153,10 +161,12 @@ class STTDaemon:
         try:
             self._audio_path = self.recorder.stop_recording()
             self.state_machine.set_state(State.TRANSCRIBING)
+            notify_recording_stopped()
             # Immediately trigger transcription
             self.state_machine.transition(Event.RECORDING_STOPPED)
         except Exception:
             self._logger.exception("Failed to stop recording")
+            notify_error("Failed to stop recording")
             # Ensure recorder is stopped on error
             if self.recorder.is_recording():
                 try:
@@ -170,6 +180,7 @@ class STTDaemon:
         """Transcribe audio (TRANSCRIBING → TYPING)."""
         if not self._audio_path:
             self._logger.error("No audio file to transcribe")
+            notify_error("No audio file to transcribe")
             self.state_machine.set_state(State.IDLE)
             return
 
@@ -181,6 +192,7 @@ class STTDaemon:
             self.state_machine.transition(Event.TRANSCRIPTION_COMPLETE)
         except Exception:
             self._logger.exception("Transcription failed")
+            notify_error("Transcription failed")
             self.state_machine.transition(Event.ERROR)
             self.state_machine.set_state(State.IDLE)
         finally:
@@ -196,6 +208,7 @@ class STTDaemon:
         """Type transcribed text (TYPING → IDLE)."""
         if not self._transcribed_text:
             self._logger.error("No text to type")
+            notify_error("No text to type")
             self.state_machine.set_state(State.IDLE)
             return
 
@@ -203,8 +216,10 @@ class STTDaemon:
         try:
             type_text(self._transcribed_text)
             self.state_machine.set_state(State.IDLE)
+            notify_transcription_complete()
         except Exception:
             self._logger.exception("Failed to type text")
+            notify_error("Failed to type text")
             self.state_machine.transition(Event.ERROR)
             self.state_machine.set_state(State.IDLE)
         finally:
