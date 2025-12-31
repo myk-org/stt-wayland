@@ -1,0 +1,75 @@
+[project]
+name = "stt-wayland"
+version = "0.1.0"
+description = "Wayland-native Speech-to-Text daemon"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["google-genai>=1.19.0", "python-dotenv>=1.0.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0", "pytest-cov>=4.1.0", "pytest-xdist>=3.5.0"]
+
+[project.scripts]
+stt-daemon = "stt_wayland.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+preview = false
+line-length = 120
+fix = true
+output-format = "grouped"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "PLC0415", "ARG", "RUF059"]
+
+[tool.ruff.format]
+exclude = [".git", ".venv", ".mypy_cache", ".tox", "__pycache__"]
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_any_generics = false
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+warn_unused_ignores = true
+strict_equality = true
+extra_checks = true
+warn_unused_configs = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["dotenv", "google", "google.*", "pytest"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disable_error_code = ["untyped-decorator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "-v",
+  "-n",
+  "auto",
+  "--strict-markers",
+  "--tb=short",
+  "--cov=stt_wayland",
+  "--cov-report=term-missing",
+  "--cov-report=html",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/__pycache__/*", "*/.venv/*"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false

@@ -1,0 +1,53 @@
+# STT Wayland - Speech to Text Daemon Configuration for Sway
+# ============================================================
+#
+# This file contains example keybindings and autostart configuration
+# for integrating the STT Wayland daemon with the Sway window manager.
+#
+# Installation:
+# 1. Copy the relevant lines below to your Sway config file:
+#    ~/.config/sway/config
+# 2. Reload Sway configuration: swaymsg reload
+#
+
+# ============================================================
+# DAEMON AUTOSTART
+# ============================================================
+
+# Start the STT daemon automatically when Sway starts
+# The daemon runs in the background and waits for toggle signals
+exec stt-daemon
+
+# ============================================================
+# KEYBINDINGS
+# ============================================================
+
+# Toggle recording with Mod+r
+# This sends SIGUSR1 signal to the daemon process, which toggles
+# recording on/off. The daemon handles all audio recording and
+# transcription internally.
+#
+# Note: Replace $mod with your preferred modifier key
+# (usually set earlier in your config as: set $mod Mod4 for Super key)
+bindsym $mod+r exec pkill -USR1 -f stt-daemon
+
+# ============================================================
+# ALTERNATIVE KEYBINDINGS (Optional)
+# ============================================================
+
+# If you prefer a different key combination, uncomment and modify:
+# bindsym $mod+Shift+r exec pkill -USR1 -f stt-daemon
+# bindsym $mod+space exec pkill -USR1 -f stt-daemon
+
+# ============================================================
+# TROUBLESHOOTING
+# ============================================================
+
+# To check if the daemon is running:
+# ps aux | grep stt-daemon
+#
+# To manually stop the daemon:
+# pkill -TERM stt-daemon
+#
+# To view daemon logs (if implemented):
+# journalctl --user -u stt-daemon -f
