@@ -14,12 +14,15 @@ Wayland-native Speech-to-Text daemon using Google Gemini API.
 ## Requirements
 
 ### Python
+
 - **Python 3.14+** is required
 
 ### Package Manager
+
 - **[uv](https://docs.astral.sh/uv/)** - Fast Python package manager and installer
 
 ### System Tools
+
 - **wtype** - Wayland text input simulation
 - **wl-clipboard** - Wayland clipboard utilities (provides `wl-copy`)
 - **pipewire-utils** or **pulseaudio-utils** - Audio recording (`pw-record` or `parecord`)
@@ -105,6 +108,7 @@ stt-daemon
 ```
 
 The daemon will:
+
 1. Create a PID file at `$XDG_RUNTIME_DIR/stt-wayland.pid`
 2. Wait for SIGUSR1 signal to toggle recording
 
@@ -157,7 +161,8 @@ Add to your Sway config:
 
 ```sway
 # Start the daemon in background (runs in IDLE state, waiting for signals)
-exec stt-daemon
+exec env GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>" $HOME/.local/bin/stt-daemon
+
 
 # Press Super+R to toggle: first press starts recording, second press stops and transcribes
 bindsym $mod+r exec pkill -USR1 stt-daemon
