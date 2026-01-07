@@ -33,11 +33,12 @@ ERR_CONFIG: Final[str] = "GEMINI_API_KEY environment variable is required. Set i
 class STTDaemon:
     """Speech-to-Text daemon for Wayland."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, refine: bool = False) -> None:
         """Initialize daemon.
 
         Args:
             config: Daemon configuration.
+            refine: Enable AI-based typo and grammar correction.
 
         """
         self.config = config
@@ -46,6 +47,7 @@ class STTDaemon:
         self.transcriber = GeminiTranscriber(
             api_key=config.api_key,
             model=config.model,
+            refine=refine,
         )
         self._logger = logging.getLogger(__name__)
         self._audio_path: Path | None = None
@@ -293,8 +295,13 @@ class STTDaemon:
         self._logger.info("Daemon stopped")
 
 
-def run() -> NoReturn:
-    """Run the STT daemon."""
+def run(*, refine: bool = False) -> NoReturn:
+    """Run the STT daemon.
+
+    Args:
+        refine: Enable AI-based typo and grammar correction.
+
+    """
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
@@ -312,5 +319,5 @@ def run() -> NoReturn:
         logger.exception("Configuration error")
         sys.exit(1)
 
-    daemon = STTDaemon(config)
+    daemon = STTDaemon(config, refine=refine)
     daemon.run()
