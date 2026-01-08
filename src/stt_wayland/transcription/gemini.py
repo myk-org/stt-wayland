@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, NoReturn
 
 from google import genai
@@ -42,6 +43,17 @@ TRANSCRIPTION_PROMPT_WITH_REFINEMENT: Final[str] = (
     "- If audio is empty, silent, or unclear, return exactly: [NO_SPEECH]\n\n"
     "CRITICAL: Your entire response must be ONLY the refined transcribed words. Nothing else."
 )
+CUSTOM_INSTRUCTION_PROMPT: Final[str] = (
+    "Apply the following instruction to this text:\n\n"
+    "INSTRUCTION: {instruction}\n\n"
+    "TEXT: {content}\n\n"
+    "STRICT OUTPUT RULES:\n"
+    "- Return ONLY the processed text\n"
+    "- NO explanations or meta-commentary\n"
+    "- NO markdown formatting or code blocks\n"
+    "- Apply the instruction exactly as specified\n"
+    "CRITICAL: Your entire response must be ONLY the processed text. Nothing else."
+)
 
 
 def _raise_empty_response_error() -> NoReturn:
@@ -59,19 +71,83 @@ def _raise_no_speech_error() -> NoReturn:
 class GeminiTranscriber:
     """Transcribes audio using Google Gemini API."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", *, refine: bool = False) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-2.5-flash",
+        *,
+        refine: bool = False,
+        instruction_keyword: str | None = None,
+    ) -> None:
         """Initialize Gemini transcriber.
 
         Args:
             api_key: Google API key.
             model: Model name to use.
             refine: Enable AI-based typo and grammar correction.
+            instruction_keyword: Keyword to separate content from AI instructions.
 
         """
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._refine = refine
+        self._instruction_keyword = instruction_keyword
         self._logger = logging.getLogger(__name__)
+
+    def _parse_instruction(self, text: str) -> tuple[str, str] | None:
+        """Parse text for instruction keyword and split into content and instruction.
+
+        Args:
+            text: The transcribed text to parse.
+
+        Returns:
+            Tuple of (content, instruction) if keyword found, None otherwise.
+
+        """
+        if self._instruction_keyword is None:
+            return None
+
+        # Case-insensitive search for the keyword as a standalone word
+        lower_text = text.lower()
+        pattern = r"\b" + re.escape(self._instruction_keyword.lower()) + r"\b"
+        match = re.search(pattern, lower_text)
+
+        if match is None:
+            return None
+
+        keyword_pos = match.start()
+
+        # Split at the keyword position
+        content = text[:keyword_pos].strip()
+        instruction = text[keyword_pos + len(self._instruction_keyword) :].strip()
+
+        return (content, instruction)
+
+    def _apply_instruction(self, content: str, instruction: str) -> str:
+        """Apply an instruction to content using the Gemini API.
+
+        Args:
+            content: The text content to process.
+            instruction: The instruction to apply.
+
+        Returns:
+            The processed text.
+
+        Raises:
+            RuntimeError: If the API call fails.
+
+        """
+        prompt = CUSTOM_INSTRUCTION_PROMPT.format(content=content, instruction=instruction)
+
+        response = self._client.models.generate_content(
+            model=self._model,
+            contents=[types.Part.from_text(text=prompt)],
+        )
+
+        if response.text:
+            return str(response.text).strip()
+
+        _raise_empty_response_error()
 
     def transcribe(self, audio_path: Path) -> str:
         """Transcribe audio file.
@@ -119,6 +195,21 @@ class GeminiTranscriber:
                 ):
                     _raise_no_speech_error()
                 self._logger.info("Transcribed: %s...", text[:100])
+
+                # Check for inline instruction (only if keyword is configured)
+                parsed = self._parse_instruction(text)
+                if parsed:
+                    content, instruction = parsed
+                    # Handle edge cases
+                    if not content:
+                        # "boom" at start - return instruction as content
+                        return instruction if instruction else text
+                    if not instruction:
+                        # "boom" at end - return content as-is
+                        return content
+                    self._logger.info("Detected instruction: %s", instruction[:50])
+                    return self._apply_instruction(content, instruction)
+
                 return text
 
             # Empty response - raise error

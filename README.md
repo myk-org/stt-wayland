@@ -10,6 +10,8 @@ Wayland-native Speech-to-Text daemon using Google Gemini API.
 - **State machine**: Clean state transitions (IDLE → RECORDING → TRANSCRIBING → TYPING)
 - **Desktop notifications**: Visual feedback for each state transition
 - **Google Gemini**: Fast transcription using Gemini 2.0 Flash
+- **AI refinement**: Optional typo and grammar correction via `--refine`
+- **Inline AI instructions**: Speak custom AI instructions using a keyword separator
 
 ## Requirements
 
@@ -126,6 +128,34 @@ Or using the PID file:
 kill -USR1 $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 ```
 
+## Command-line Options
+
+### `--refine`
+
+Enable AI-based typo and grammar correction on transcribed text.
+
+```bash
+stt-daemon --refine
+```
+
+### `--instruction-keyword KEYWORD`
+
+Enable inline AI instructions by specifying a separator keyword. When you speak the keyword, everything after it is treated as an instruction for the AI to apply to the text before the keyword.
+
+```bash
+stt-daemon --instruction-keyword boom
+```
+
+**Example:**
+- You say: "Hello world boom refine as a poem"
+- The system parses: content = "Hello world", instruction = "refine as a poem"
+- AI applies your instruction and outputs the processed text
+
+**Notes:**
+- Keyword matching is case-insensitive ("boom", "BOOM", "Boom" all work)
+- If no keyword is detected in your speech, the text is output as-is
+- You can combine with `--refine`: `stt-daemon --refine --instruction-keyword boom`
+
 ### Stop the daemon
 
 ```bash
@@ -160,9 +190,14 @@ IDLE ──SIGUSR1──→ RECORDING ──SIGUSR1──→ TRANSCRIBING ──
 Add to your Sway config:
 
 ```sway
-# Start the daemon in background (runs in IDLE state, waiting for signals)
-exec env GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>" $HOME/.local/bin/stt-daemon
+# Basic usage
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon
 
+# With refinement
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine
+
+# With inline AI instructions (say "boom" to give AI instructions)
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --instruction-keyword boom
 
 # Press Super+R to toggle: first press starts recording, second press stops and transcribes
 bindsym $mod+r exec pkill -USR1 stt-daemon
