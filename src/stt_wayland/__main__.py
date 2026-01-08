@@ -17,9 +17,15 @@ def main() -> None:
         default=False,
         help="Enable AI-based typo and grammar correction on transcribed text (default: disabled)",
     )
+    parser.add_argument(
+        "--instruction-keyword",
+        type=str,
+        default=None,
+        help="Keyword to separate content from AI instructions (e.g., 'boom'). If not set, feature is disabled.",
+    )
 
     args = parser.parse_args()
-    run(refine=args.refine)
+    run(refine=args.refine, instruction_keyword=args.instruction_keyword)
 
 
 if __name__ == "__main__":
