@@ -54,6 +54,16 @@ CUSTOM_INSTRUCTION_PROMPT: Final[str] = (
     "- Apply the instruction exactly as specified\n"
     "CRITICAL: Your entire response must be ONLY the processed text. Nothing else."
 )
+ASK_QUERY_PROMPT: Final[str] = (
+    "Answer this question or respond to this request concisely: {query}\n\n"
+    "STRICT OUTPUT RULES:\n"
+    "- Return ONLY the answer\n"
+    "- Be concise and direct\n"
+    "- NO explanations about what you're doing\n"
+    "- NO prefixes like 'The answer is' or 'Here is the response'\n"
+    "- NO markdown formatting or code blocks\n"
+    "CRITICAL: Your entire response must be ONLY the answer. Nothing else."
+)
 
 
 def _raise_empty_response_error() -> NoReturn:
@@ -78,6 +88,7 @@ class GeminiTranscriber:
         *,
         refine: bool = False,
         instruction_keyword: str | None = None,
+        ask_keyword: str | None = None,
     ) -> None:
         """Initialize Gemini transcriber.
 
@@ -86,12 +97,14 @@ class GeminiTranscriber:
             model: Model name to use.
             refine: Enable AI-based typo and grammar correction.
             instruction_keyword: Keyword to separate content from AI instructions.
+            ask_keyword: Keyword at start of speech to trigger AI query mode.
 
         """
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._refine = refine
         self._instruction_keyword = instruction_keyword
+        self._ask_keyword = ask_keyword
         self._logger = logging.getLogger(__name__)
 
     def _parse_instruction(self, text: str) -> tuple[str, str] | None:
@@ -149,6 +162,56 @@ class GeminiTranscriber:
 
         _raise_empty_response_error()
 
+    def _parse_ask_query(self, text: str) -> str | None:
+        """Parse text for ask keyword at the start and extract the query.
+
+        Args:
+            text: The transcribed text to parse.
+
+        Returns:
+            The query portion if ask keyword is found at start, None otherwise.
+
+        """
+        if self._ask_keyword is None:
+            return None
+
+        # Case-insensitive search for the keyword at the START of text
+        stripped_text = text.strip()
+        pattern = r"^" + re.escape(self._ask_keyword.lower()) + r"\b"
+        match = re.match(pattern, stripped_text.lower())
+
+        if match is None:
+            return None
+
+        # Extract query after the keyword
+        query = stripped_text[len(self._ask_keyword) :].strip()
+        return query
+
+    def _answer_query(self, query: str) -> str:
+        """Send a query to the AI and return the answer.
+
+        Args:
+            query: The query to send to the AI.
+
+        Returns:
+            The AI's answer.
+
+        Raises:
+            RuntimeError: If the API call fails.
+
+        """
+        prompt = ASK_QUERY_PROMPT.format(query=query)
+
+        response = self._client.models.generate_content(
+            model=self._model,
+            contents=[types.Part.from_text(text=prompt)],
+        )
+
+        if response.text:
+            return str(response.text).strip()
+
+        _raise_empty_response_error()
+
     def transcribe(self, audio_path: Path) -> str:
         """Transcribe audio file.
 
@@ -195,6 +258,15 @@ class GeminiTranscriber:
                 ):
                     _raise_no_speech_error()
                 self._logger.info("Transcribed: %s...", text[:100])
+
+                # Check for ask keyword at START (takes precedence over instruction keyword)
+                ask_query = self._parse_ask_query(text)
+                if ask_query is not None:
+                    if not ask_query:
+                        # Keyword only, no query - return empty string
+                        return ""
+                    self._logger.info("Detected ask query: %s", ask_query[:50])
+                    return self._answer_query(ask_query)
 
                 # Check for inline instruction (only if keyword is configured)
                 parsed = self._parse_instruction(text)

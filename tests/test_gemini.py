@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from stt_wayland.transcription.gemini import (
+    ASK_QUERY_PROMPT,
     CUSTOM_INSTRUCTION_PROMPT,
     ERR_EMPTY_RESPONSE,
     GeminiTranscriber,
@@ -311,3 +313,373 @@ class TestCustomInstructionPrompt:
         assert "test content" in formatted
         assert "{instruction}" not in formatted
         assert "{content}" not in formatted
+
+
+class TestParseAskQuery:
+    """Test _parse_ask_query method."""
+
+    @pytest.fixture
+    def transcriber(self) -> GeminiTranscriber:
+        """Create a GeminiTranscriber instance with ask keyword enabled."""
+        with patch("stt_wayland.transcription.gemini.genai.Client"):
+            return GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+    def test_basic_ask_query(self, transcriber: GeminiTranscriber) -> None:
+        """Test basic ask query detection."""
+        result = transcriber._parse_ask_query("hey what is the capital of France")
+
+        assert result == "what is the capital of France"
+
+    def test_case_insensitive_uppercase(self, transcriber: GeminiTranscriber) -> None:
+        """Test case insensitive matching with uppercase HEY."""
+        result = transcriber._parse_ask_query("HEY what is the answer")
+
+        assert result == "what is the answer"
+
+    def test_case_insensitive_mixed_case(self, transcriber: GeminiTranscriber) -> None:
+        """Test case insensitive matching with mixed case Hey."""
+        result = transcriber._parse_ask_query("Hey what is the answer")
+
+        assert result == "what is the answer"
+
+    def test_case_insensitive_alternating_case(self, transcriber: GeminiTranscriber) -> None:
+        """Test case insensitive matching with alternating case hEy."""
+        result = transcriber._parse_ask_query("hEy what is the answer")
+
+        assert result == "what is the answer"
+
+    def test_keyword_not_at_start_returns_none(self, transcriber: GeminiTranscriber) -> None:
+        """Test that keyword not at start returns None."""
+        result = transcriber._parse_ask_query("hello hey what is the answer")
+
+        assert result is None
+
+    def test_word_boundary_heyo_not_match(self, transcriber: GeminiTranscriber) -> None:
+        """Test that 'heyo' should NOT trigger for keyword 'hey' (word boundary)."""
+        result = transcriber._parse_ask_query("heyo what is the answer")
+
+        assert result is None
+
+    def test_word_boundary_they_not_match(self, transcriber: GeminiTranscriber) -> None:
+        """Test that 'they' should NOT trigger for keyword 'hey' (word boundary)."""
+        result = transcriber._parse_ask_query("they are here")
+
+        assert result is None
+
+    def test_keyword_only_returns_empty_string(self, transcriber: GeminiTranscriber) -> None:
+        """Test keyword only returns empty string."""
+        result = transcriber._parse_ask_query("hey")
+
+        assert result == ""
+
+    def test_keyword_with_trailing_spaces_only(self, transcriber: GeminiTranscriber) -> None:
+        """Test keyword with trailing spaces only returns empty string."""
+        result = transcriber._parse_ask_query("hey   ")
+
+        assert result == ""
+
+    def test_empty_text(self, transcriber: GeminiTranscriber) -> None:
+        """Test that empty text returns None."""
+        result = transcriber._parse_ask_query("")
+
+        assert result is None
+
+    def test_text_with_leading_whitespace(self, transcriber: GeminiTranscriber) -> None:
+        """Test text with leading whitespace."""
+        result = transcriber._parse_ask_query("  hey what is the answer")
+
+        assert result == "what is the answer"
+
+    def test_disabled_when_no_keyword(self) -> None:
+        """Test that _parse_ask_query returns None when no keyword is configured."""
+        with patch("stt_wayland.transcription.gemini.genai.Client"):
+            transcriber = GeminiTranscriber(api_key="test-key")
+
+        result = transcriber._parse_ask_query("hey what is the answer")
+
+        assert result is None
+
+    def test_custom_keyword(self) -> None:
+        """Test that _parse_ask_query works with a custom keyword."""
+        with patch("stt_wayland.transcription.gemini.genai.Client"):
+            transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="assistant")
+
+        result = transcriber._parse_ask_query("assistant what is the weather")
+
+        assert result == "what is the weather"
+
+    def test_custom_keyword_case_insensitive(self) -> None:
+        """Test that custom keyword matching is case insensitive."""
+        with patch("stt_wayland.transcription.gemini.genai.Client"):
+            transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="assistant")
+
+        result = transcriber._parse_ask_query("ASSISTANT what is the weather")
+
+        assert result == "what is the weather"
+
+    def test_keyword_with_special_chars_in_query(self, transcriber: GeminiTranscriber) -> None:
+        """Test keyword with special characters in query."""
+        result = transcriber._parse_ask_query("hey what is 2 + 2?")
+
+        assert result == "what is 2 + 2?"
+
+
+class TestAnswerQuery:
+    """Test _answer_query method."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_success(self, mock_client_class: MagicMock) -> None:
+        """Test successful query answering."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "The capital of France is Paris"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+        result = transcriber._answer_query("what is the capital of France")
+
+        assert result == "The capital of France is Paris"
+        mock_client.models.generate_content.assert_called_once()
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_uses_correct_prompt_format(self, mock_client_class: MagicMock) -> None:
+        """Test that answer_query uses the correct prompt format."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Result"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+        transcriber._answer_query("my query")
+
+        call_args = mock_client.models.generate_content.call_args
+        assert call_args.kwargs["model"] == "gemini-2.5-flash"
+        assert "contents" in call_args.kwargs
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_strips_whitespace(self, mock_client_class: MagicMock) -> None:
+        """Test that result is stripped of leading/trailing whitespace."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "  The answer  \n"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+        result = transcriber._answer_query("query")
+
+        assert result == "The answer"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_empty_response_raises_error(self, mock_client_class: MagicMock) -> None:
+        """Test that empty API response raises RuntimeError."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = None
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        with pytest.raises(RuntimeError, match=ERR_EMPTY_RESPONSE):
+            transcriber._answer_query("query")
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_empty_string_response_raises_error(self, mock_client_class: MagicMock) -> None:
+        """Test that empty string API response raises RuntimeError."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = ""
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        with pytest.raises(RuntimeError, match=ERR_EMPTY_RESPONSE):
+            transcriber._answer_query("query")
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_uses_configured_model(self, mock_client_class: MagicMock) -> None:
+        """Test that answer_query uses the configured model."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Result"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", model="custom-model", ask_keyword="hey")
+        transcriber._answer_query("query")
+
+        call_args = mock_client.models.generate_content.call_args
+        assert call_args.kwargs["model"] == "custom-model"
+
+
+class TestAskQueryPrompt:
+    """Test ASK_QUERY_PROMPT constant."""
+
+    def test_prompt_contains_placeholder(self) -> None:
+        """Test that prompt contains required placeholder."""
+        assert "{query}" in ASK_QUERY_PROMPT
+
+    def test_prompt_format_works(self) -> None:
+        """Test that prompt can be formatted correctly."""
+        formatted = ASK_QUERY_PROMPT.format(query="test query")
+
+        assert "test query" in formatted
+        assert "{query}" not in formatted
+
+
+class TestAskKeywordPrecedence:
+    """Test that ask-keyword takes precedence over instruction-keyword."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_ask_keyword_takes_precedence(self, mock_client_class: MagicMock) -> None:
+        """Test that ask-keyword is checked before instruction-keyword."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # Both keywords are configured
+        transcriber = GeminiTranscriber(
+            api_key="test-key",
+            instruction_keyword="boom",
+            ask_keyword="hey",
+        )
+
+        # Text starts with ask keyword - should trigger ask mode, not instruction mode
+        text = "hey what is boom doing here"
+
+        # Test _parse_ask_query first
+        ask_result = transcriber._parse_ask_query(text)
+        assert ask_result == "what is boom doing here"
+
+        # Test _parse_instruction - it also finds "boom" in the text
+        # but in transcribe(), ask-keyword is checked first and takes precedence
+        instruction_result = transcriber._parse_instruction(text)
+        assert instruction_result is not None  # "boom" is present, so this parses too
+
+
+class TestGeminiTranscriberAskKeywordInit:
+    """Test GeminiTranscriber initialization with ask_keyword."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_init_ask_keyword(self, _mock_client_class: MagicMock) -> None:
+        """Test initialization with ask keyword."""
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        assert transcriber._ask_keyword == "hey"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_init_default_ask_keyword_none(self, _mock_client_class: MagicMock) -> None:
+        """Test that ask_keyword defaults to None."""
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        assert transcriber._ask_keyword is None
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_init_both_keywords(self, _mock_client_class: MagicMock) -> None:
+        """Test initialization with both instruction and ask keywords."""
+        transcriber = GeminiTranscriber(
+            api_key="test-key",
+            instruction_keyword="boom",
+            ask_keyword="hey",
+        )
+
+        assert transcriber._instruction_keyword == "boom"
+        assert transcriber._ask_keyword == "hey"
+
+
+class TestTranscribeWithAskKeyword:
+    """Integration tests for transcribe() method with ask keyword."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_transcribe_ask_keyword_only_returns_empty(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that saying only the keyword (no query) returns empty string."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # Mock transcription to return just the keyword
+        mock_response = MagicMock()
+        mock_response.text = "hey"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        # Create a dummy audio file
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        result = transcriber.transcribe(audio_file)
+
+        assert result == ""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_transcribe_ask_keyword_with_query_returns_ai_answer(
+        self, mock_client_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test full flow with a query returns AI answer."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # First call: transcription returns "hey what is Python"
+        # Second call: AI answer returns the response
+        transcription_response = MagicMock()
+        transcription_response.text = "hey what is Python"
+
+        ai_answer_response = MagicMock()
+        ai_answer_response.text = "Python is a programming language"
+
+        mock_client.models.generate_content.side_effect = [
+            transcription_response,
+            ai_answer_response,
+        ]
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        # Create a dummy audio file
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        result = transcriber.transcribe(audio_file)
+
+        assert result == "Python is a programming language"
+        # Verify two API calls were made: transcription + AI query
+        assert mock_client.models.generate_content.call_count == 2
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_transcribe_ask_keyword_precedence_in_full_flow(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Integration test verifying ask-keyword takes precedence over instruction-keyword."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # Mock transcription containing both keywords: "hey boom do something"
+        # The ask keyword "hey" should take precedence over instruction keyword "boom"
+        transcription_response = MagicMock()
+        transcription_response.text = "hey boom do something"
+
+        ai_answer_response = MagicMock()
+        ai_answer_response.text = "AI response to boom do something"
+
+        mock_client.models.generate_content.side_effect = [
+            transcription_response,
+            ai_answer_response,
+        ]
+
+        # Create transcriber with BOTH keywords
+        transcriber = GeminiTranscriber(
+            api_key="test-key",
+            instruction_keyword="boom",
+            ask_keyword="hey",
+        )
+
+        # Create a dummy audio file
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        result = transcriber.transcribe(audio_file)
+
+        # Verify ask mode is triggered (AI answer returned), not instruction mode
+        assert result == "AI response to boom do something"
+        # Verify two API calls: transcription + AI query (not instruction apply)
+        assert mock_client.models.generate_content.call_count == 2

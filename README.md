@@ -12,6 +12,7 @@ Wayland-native Speech-to-Text daemon using Google Gemini API.
 - **Google Gemini**: Fast transcription using Gemini 2.0 Flash
 - **AI refinement**: Optional typo and grammar correction via `--refine`
 - **Inline AI instructions**: Speak custom AI instructions using a keyword separator
+- **Voice query mode**: Ask AI questions and get answers typed out via `--ask-keyword`
 
 ## Requirements
 
@@ -156,6 +157,26 @@ stt-daemon --instruction-keyword boom
 - If no keyword is detected in your speech, the text is output as-is
 - You can combine with `--refine`: `stt-daemon --refine --instruction-keyword boom`
 
+### `--ask-keyword KEYWORD`
+
+Enable voice query mode by specifying a trigger keyword. When your speech STARTS with the keyword, the rest is sent to the AI as a question, and the AI's ANSWER is typed out instead of your original words.
+
+```bash
+stt-daemon --ask-keyword hey
+```
+
+**Example:**
+- You say: "hey what is the capital of France"
+- The system types: "The capital of France is Paris"
+
+**Notes:**
+- The keyword must be at the START of your speech
+- Keyword matching is case-insensitive ("hey", "HEY", "Hey" all work)
+- Word boundaries are respected ("heyo" will NOT trigger for keyword "hey")
+- If keyword is spoken alone without a query, nothing is typed
+- You can combine with other flags: `stt-daemon --ask-keyword hey --instruction-keyword boom`
+- When both keywords are configured, `--ask-keyword` takes precedence (checked first)
+
 ### Stop the daemon
 
 ```bash
@@ -198,6 +219,12 @@ exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine
 
 # With inline AI instructions (say "boom" to give AI instructions)
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --instruction-keyword boom
+
+# With voice query mode (say "hey" at start to ask AI questions)
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --ask-keyword hey
+
+# Combined: voice queries + inline instructions
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --ask-keyword hey --instruction-keyword boom
 
 # Press Super+R to toggle: first press starts recording, second press stops and transcribes
 bindsym $mod+r exec pkill -USR1 stt-daemon
