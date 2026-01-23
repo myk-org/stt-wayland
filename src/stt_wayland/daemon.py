@@ -33,13 +33,21 @@ ERR_CONFIG: Final[str] = "GEMINI_API_KEY environment variable is required. Set i
 class STTDaemon:
     """Speech-to-Text daemon for Wayland."""
 
-    def __init__(self, config: Config, *, refine: bool = False, instruction_keyword: str | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        *,
+        refine: bool = False,
+        instruction_keyword: str | None = None,
+        ask_keyword: str | None = None,
+    ) -> None:
         """Initialize daemon.
 
         Args:
             config: Daemon configuration.
             refine: Enable AI-based typo and grammar correction.
             instruction_keyword: Keyword to separate content from AI instructions.
+            ask_keyword: Keyword at start of speech to trigger AI query mode.
 
         """
         self.config = config
@@ -50,6 +58,7 @@ class STTDaemon:
             model=config.model,
             refine=refine,
             instruction_keyword=instruction_keyword,
+            ask_keyword=ask_keyword,
         )
         self._logger = logging.getLogger(__name__)
         self._audio_path: Path | None = None
@@ -297,12 +306,18 @@ class STTDaemon:
         self._logger.info("Daemon stopped")
 
 
-def run(*, refine: bool = False, instruction_keyword: str | None = None) -> NoReturn:
+def run(
+    *,
+    refine: bool = False,
+    instruction_keyword: str | None = None,
+    ask_keyword: str | None = None,
+) -> NoReturn:
     """Run the STT daemon.
 
     Args:
         refine: Enable AI-based typo and grammar correction.
         instruction_keyword: Keyword to separate content from AI instructions.
+        ask_keyword: Keyword at start of speech to trigger AI query mode.
 
     """
     # Setup logging
@@ -322,5 +337,5 @@ def run(*, refine: bool = False, instruction_keyword: str | None = None) -> NoRe
         logger.exception("Configuration error")
         sys.exit(1)
 
-    daemon = STTDaemon(config, refine=refine, instruction_keyword=instruction_keyword)
+    daemon = STTDaemon(config, refine=refine, instruction_keyword=instruction_keyword, ask_keyword=ask_keyword)
     daemon.run()
