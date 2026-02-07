@@ -39,6 +39,7 @@ class STTDaemon:
         config: Config,
         *,
         refine: bool = False,
+        format_output: bool = False,
         instruction_keyword: str | None = None,
         ask_keyword: str | None = None,
     ) -> None:
@@ -47,6 +48,7 @@ class STTDaemon:
         Args:
             config: Daemon configuration.
             refine: Enable AI-based typo and grammar correction.
+            format_output: Enable plain-text formatting of refined output.
             instruction_keyword: Keyword to separate content from AI instructions.
             ask_keyword: Keyword at start of speech to trigger AI query mode.
 
@@ -58,6 +60,7 @@ class STTDaemon:
             api_key=config.api_key,
             model=config.model,
             refine=refine,
+            format_output=format_output,
             instruction_keyword=instruction_keyword,
             ask_keyword=ask_keyword,
         )
@@ -313,6 +316,7 @@ class STTDaemon:
 def run(
     *,
     refine: bool = False,
+    format_output: bool = False,
     instruction_keyword: str | None = None,
     ask_keyword: str | None = None,
 ) -> NoReturn:
@@ -320,6 +324,7 @@ def run(
 
     Args:
         refine: Enable AI-based typo and grammar correction.
+        format_output: Enable plain-text formatting of refined output.
         instruction_keyword: Keyword to separate content from AI instructions.
         ask_keyword: Keyword at start of speech to trigger AI query mode.
 
@@ -341,5 +346,11 @@ def run(
         logger.exception("Configuration error")
         sys.exit(1)
 
-    daemon = STTDaemon(config, refine=refine, instruction_keyword=instruction_keyword, ask_keyword=ask_keyword)
+    daemon = STTDaemon(
+        config,
+        refine=refine,
+        format_output=format_output,
+        instruction_keyword=instruction_keyword,
+        ask_keyword=ask_keyword,
+    )
     daemon.run()

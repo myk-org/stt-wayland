@@ -18,6 +18,12 @@ def main() -> None:
         help="Enable AI-based typo and grammar correction on transcribed text (default: disabled)",
     )
     parser.add_argument(
+        "--format",
+        action="store_true",
+        default=False,
+        help="Enable plain-text formatting of refined output (requires --refine)",
+    )
+    parser.add_argument(
         "--instruction-keyword",
         type=str,
         default=None,
@@ -31,7 +37,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    run(refine=args.refine, instruction_keyword=args.instruction_keyword, ask_keyword=args.ask_keyword)
+
+    if args.format and not args.refine:
+        parser.error("--format requires --refine")
+
+    run(
+        refine=args.refine,
+        format_output=args.format,
+        instruction_keyword=args.instruction_keyword,
+        ask_keyword=args.ask_keyword,
+    )
 
 
 if __name__ == "__main__":

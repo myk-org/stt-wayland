@@ -133,12 +133,20 @@ kill -USR1 $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 
 ### `--refine`
 
-Enable AI-based typo and grammar correction on transcribed text. When the spoken content contains natural structure (lists, multiple points, distinct topics), the AI will format the output with line breaks, numbered lists, and bulleted items.
-
-Multi-line formatted output is pasted via clipboard (`wl-copy` + Ctrl+V) to avoid triggering Enter key presses in the active window. Single-line output continues to use direct `wtype` input.
+Enable AI-based typo and grammar correction on transcribed text.
 
 ```bash
 stt-daemon --refine
+```
+
+### `--format`
+
+Enable plain-text formatting of refined output. Requires `--refine`.
+
+When the spoken content contains natural structure (lists, multiple points, distinct topics), the AI will format the output with line breaks, numbered lists, and bulleted items. Multi-line formatted output is pasted via clipboard (`wl-copy` + Ctrl+V) to avoid triggering Enter key presses in the active window.
+
+```bash
+stt-daemon --refine --format
 ```
 
 **Example:**
@@ -228,6 +236,9 @@ exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon
 
 # With refinement
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine
+
+# With refinement and formatting
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine --format
 
 # With inline AI instructions (say "boom" to give AI instructions)
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --instruction-keyword boom
