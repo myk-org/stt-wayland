@@ -20,6 +20,7 @@ from .output import (
     notify_recording_started,
     notify_recording_stopped,
     notify_transcription_complete,
+    paste_text,
     type_text,
 )
 from .state_machine import Event, State, StateMachine
@@ -38,6 +39,7 @@ class STTDaemon:
         config: Config,
         *,
         refine: bool = False,
+        format_output: bool = False,
         instruction_keyword: str | None = None,
         ask_keyword: str | None = None,
     ) -> None:
@@ -46,6 +48,7 @@ class STTDaemon:
         Args:
             config: Daemon configuration.
             refine: Enable AI-based typo and grammar correction.
+            format_output: Enable plain-text formatting of refined output.
             instruction_keyword: Keyword to separate content from AI instructions.
             ask_keyword: Keyword at start of speech to trigger AI query mode.
 
@@ -57,6 +60,7 @@ class STTDaemon:
             api_key=config.api_key,
             model=config.model,
             refine=refine,
+            format_output=format_output,
             instruction_keyword=instruction_keyword,
             ask_keyword=ask_keyword,
         )
@@ -227,7 +231,10 @@ class STTDaemon:
 
         self._logger.info("Typing text")
         try:
-            type_text(self._transcribed_text)
+            if "\n" in self._transcribed_text:
+                paste_text(self._transcribed_text)
+            else:
+                type_text(self._transcribed_text)
             self.state_machine.set_state(State.IDLE)
             notify_transcription_complete()
         except Exception:
@@ -309,6 +316,7 @@ class STTDaemon:
 def run(
     *,
     refine: bool = False,
+    format_output: bool = False,
     instruction_keyword: str | None = None,
     ask_keyword: str | None = None,
 ) -> NoReturn:
@@ -316,6 +324,7 @@ def run(
 
     Args:
         refine: Enable AI-based typo and grammar correction.
+        format_output: Enable plain-text formatting of refined output.
         instruction_keyword: Keyword to separate content from AI instructions.
         ask_keyword: Keyword at start of speech to trigger AI query mode.
 
@@ -337,5 +346,11 @@ def run(
         logger.exception("Configuration error")
         sys.exit(1)
 
-    daemon = STTDaemon(config, refine=refine, instruction_keyword=instruction_keyword, ask_keyword=ask_keyword)
+    daemon = STTDaemon(
+        config,
+        refine=refine,
+        format_output=format_output,
+        instruction_keyword=instruction_keyword,
+        ask_keyword=ask_keyword,
+    )
     daemon.run()

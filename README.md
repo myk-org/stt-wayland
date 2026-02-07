@@ -139,6 +139,26 @@ Enable AI-based typo and grammar correction on transcribed text.
 stt-daemon --refine
 ```
 
+### `--format`
+
+Enable plain-text formatting of refined output. Requires `--refine`.
+
+When the spoken content contains natural structure (lists, multiple points, distinct topics), the AI will format the output with line breaks, numbered lists, and bulleted items. Multi-line formatted output is pasted via clipboard (`wl-copy` + Ctrl+V) to avoid triggering Enter key presses in the active window.
+
+```bash
+stt-daemon --refine --format
+```
+
+**Example:**
+- You say: "I have a few things to say. This is okay, this is bad, and this needs approval."
+- Output:
+  ```
+  I have a few things to say:
+  1. This is okay
+  2. This is bad
+  3. This needs approval
+  ```
+
 ### `--instruction-keyword KEYWORD`
 
 Enable inline AI instructions by specifying a separator keyword. When you speak the keyword, everything after it is treated as an instruction for the AI to apply to the text before the keyword.
@@ -193,7 +213,7 @@ kill -TERM $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 
 1. **First SIGUSR1**: Start recording (IDLE → RECORDING) - notification shown
 2. **Second SIGUSR1**: Stop recording and transcribe (RECORDING → TRANSCRIBING) - notification shown
-3. **Auto-type**: Transcribed text is automatically typed using `wtype` - success notification shown
+3. **Auto-type**: Transcribed text is typed via `wtype` (or pasted via clipboard for multi-line output) - success notification shown
 4. **Return to IDLE**: Ready for next recording
 
 Desktop notifications appear at each stage to provide visual feedback on the current state.
@@ -216,6 +236,9 @@ exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon
 
 # With refinement
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine
+
+# With refinement and formatting
+exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --refine --format
 
 # With inline AI instructions (say "boom" to give AI instructions)
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --instruction-keyword boom
@@ -242,8 +265,8 @@ src/stt_wayland/
 ├── transcription/
 │   └── gemini.py       # Google Gemini API client
 └── output/
-    ├── wtype.py        # wtype text output
-    └── clipboard.py    # wl-copy fallback
+    ├── wtype.py        # wtype text output and clipboard paste
+    └── clipboard.py    # wl-copy clipboard operations
 ```
 
 ## Development

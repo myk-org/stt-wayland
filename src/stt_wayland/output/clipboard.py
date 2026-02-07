@@ -33,10 +33,13 @@ def copy_to_clipboard(text: str) -> None:
     logger.info("Copying text to clipboard: %s...", text[:50])
 
     try:
+        # Use DEVNULL instead of capture_output=True because wl-copy forks
+        # a background child that keeps pipes open, causing subprocess.run to hang.
         subprocess.run(
             ["wl-copy"],  # noqa: S607
             input=text.encode("utf-8"),
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             check=True,
             timeout=5,
         )
@@ -44,9 +47,8 @@ def copy_to_clipboard(text: str) -> None:
         logger.info("Text copied to clipboard successfully")
 
     except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode()
-        logger.exception("wl-copy failed: %s", stderr)
-        msg = f"wl-copy failed: {stderr}"
+        logger.exception("wl-copy failed with exit code %d", e.returncode)
+        msg = f"wl-copy failed with exit code {e.returncode}"
         raise RuntimeError(msg) from e
     except subprocess.TimeoutExpired as e:
         logger.exception("wl-copy timed out")

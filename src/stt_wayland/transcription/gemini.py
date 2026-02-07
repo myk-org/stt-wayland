@@ -43,6 +43,30 @@ TRANSCRIPTION_PROMPT_WITH_REFINEMENT: Final[str] = (
     "- If audio is empty, silent, or unclear, return exactly: [NO_SPEECH]\n\n"
     "CRITICAL: Your entire response must be ONLY the refined transcribed words. Nothing else."
 )
+TRANSCRIPTION_PROMPT_WITH_FORMAT: Final[str] = (
+    "Transcribe the spoken words in this audio file. "
+    "After transcription, refine the text by correcting any typos, grammatical errors, "
+    "and improving clarity while preserving the original meaning.\n\n"
+    "FORMATTING RULES:\n"
+    "- If the speech contains multiple distinct points, items, or topics, "
+    "format them as a numbered list (1. 2. 3.) or a bulleted list using dashes (-)\n"
+    "- Use line breaks to separate logically distinct points or paragraphs\n"
+    "- Use numbered lists (1. 2. 3.) for sequential or ordered items\n"
+    "- Use dashes (-) for unordered items\n"
+    "- Keep simple sentences or short phrases as plain flowing text, do NOT over-format\n"
+    "- Only apply structure when the spoken content naturally contains it\n\n"
+    "STRICT OUTPUT RULES:\n"
+    "- Return ONLY the refined transcribed text\n"
+    "- NO explanations whatsoever\n"
+    "- NO prefixes like 'The corrected version is' or 'Here is the refined text'\n"
+    "- NO meta-commentary about what you corrected or changed\n"
+    "- NO markdown formatting (no bold, italic, headers, code blocks, or horizontal rules)\n"
+    "- Plain-text lists using dashes (-) or numbers (1. 2. 3.) as described above are allowed\n"
+    "- NO quotation marks around the output\n"
+    "- Output the clean refined text directly\n"
+    "- If audio is empty, silent, or unclear, return exactly: [NO_SPEECH]\n\n"
+    "CRITICAL: Your entire response must be ONLY the refined transcribed words. Nothing else."
+)
 CUSTOM_INSTRUCTION_PROMPT: Final[str] = (
     "Apply the following instruction to this text:\n\n"
     "INSTRUCTION: {instruction}\n\n"
@@ -87,6 +111,7 @@ class GeminiTranscriber:
         model: str = "gemini-2.5-flash",
         *,
         refine: bool = False,
+        format_output: bool = False,
         instruction_keyword: str | None = None,
         ask_keyword: str | None = None,
     ) -> None:
@@ -96,6 +121,7 @@ class GeminiTranscriber:
             api_key: Google API key.
             model: Model name to use.
             refine: Enable AI-based typo and grammar correction.
+            format_output: Enable plain-text formatting of refined output.
             instruction_keyword: Keyword to separate content from AI instructions.
             ask_keyword: Keyword at start of speech to trigger AI query mode.
 
@@ -103,6 +129,12 @@ class GeminiTranscriber:
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._refine = refine
+        self._format_output = format_output
+
+        if self._format_output and not self._refine:
+            msg = "format_output requires refine to be enabled"
+            raise ValueError(msg)
+
         self._instruction_keyword = instruction_keyword
         self._ask_keyword = ask_keyword
         self._logger = logging.getLogger(__name__)
@@ -225,7 +257,12 @@ class GeminiTranscriber:
             RuntimeError: If transcription fails.
 
         """
-        refine_mode = "with refinement" if self._refine else "raw transcription"
+        if self._format_output:
+            refine_mode = "with refinement and formatting"
+        elif self._refine:
+            refine_mode = "with refinement"
+        else:
+            refine_mode = "raw transcription"
         self._logger.info("Transcribing %s with %s (%s)", audio_path, self._model, refine_mode)
 
         try:
@@ -237,7 +274,12 @@ class GeminiTranscriber:
             audio_part = types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
 
             # Select prompt based on refine setting
-            prompt = TRANSCRIPTION_PROMPT_WITH_REFINEMENT if self._refine else TRANSCRIPTION_PROMPT
+            if self._format_output:
+                prompt = TRANSCRIPTION_PROMPT_WITH_FORMAT
+            elif self._refine:
+                prompt = TRANSCRIPTION_PROMPT_WITH_REFINEMENT
+            else:
+                prompt = TRANSCRIPTION_PROMPT
 
             # Generate content with audio
             response = self._client.models.generate_content(
