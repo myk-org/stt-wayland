@@ -20,6 +20,7 @@ from .output import (
     notify_recording_started,
     notify_recording_stopped,
     notify_transcription_complete,
+    paste_text,
     type_text,
 )
 from .state_machine import Event, State, StateMachine
@@ -227,7 +228,10 @@ class STTDaemon:
 
         self._logger.info("Typing text")
         try:
-            type_text(self._transcribed_text)
+            if "\n" in self._transcribed_text:
+                paste_text(self._transcribed_text)
+            else:
+                type_text(self._transcribed_text)
             self.state_machine.set_state(State.IDLE)
             notify_transcription_complete()
         except Exception:

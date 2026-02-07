@@ -133,11 +133,23 @@ kill -USR1 $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 
 ### `--refine`
 
-Enable AI-based typo and grammar correction on transcribed text.
+Enable AI-based typo and grammar correction on transcribed text. When the spoken content contains natural structure (lists, multiple points, distinct topics), the AI will format the output with line breaks, numbered lists, and bulleted items.
+
+Multi-line formatted output is pasted via clipboard (`wl-copy` + Ctrl+V) to avoid triggering Enter key presses in the active window. Single-line output continues to use direct `wtype` input.
 
 ```bash
 stt-daemon --refine
 ```
+
+**Example:**
+- You say: "I have a few things to say. This is okay, this is bad, and this needs approval."
+- Output:
+  ```
+  I have a few things to say:
+  1. This is okay
+  2. This is bad
+  3. This needs approval
+  ```
 
 ### `--instruction-keyword KEYWORD`
 
@@ -193,7 +205,7 @@ kill -TERM $(cat $XDG_RUNTIME_DIR/stt-wayland.pid)
 
 1. **First SIGUSR1**: Start recording (IDLE → RECORDING) - notification shown
 2. **Second SIGUSR1**: Stop recording and transcribe (RECORDING → TRANSCRIBING) - notification shown
-3. **Auto-type**: Transcribed text is automatically typed using `wtype` - success notification shown
+3. **Auto-type**: Transcribed text is typed via `wtype` (or pasted via clipboard for multi-line output) - success notification shown
 4. **Return to IDLE**: Ready for next recording
 
 Desktop notifications appear at each stage to provide visual feedback on the current state.
@@ -242,8 +254,8 @@ src/stt_wayland/
 ├── transcription/
 │   └── gemini.py       # Google Gemini API client
 └── output/
-    ├── wtype.py        # wtype text output
-    └── clipboard.py    # wl-copy fallback
+    ├── wtype.py        # wtype text output and clipboard paste
+    └── clipboard.py    # wl-copy clipboard operations
 ```
 
 ## Development
