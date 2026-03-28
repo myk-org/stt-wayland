@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from typing import Final
 
 from .audio import AudioRecorder
-from .config import Config
+from .config import LIVE_MODEL_DEFAULT, Config
 from .output import (
     notify_error,
     notify_recording_started,
@@ -24,7 +24,7 @@ from .output import (
     type_text,
 )
 from .state_machine import Event, State, StateMachine
-from .transcription import GeminiTranscriber
+from .transcription import GeminiLiveTranscriber, GeminiTranscriber
 
 # Error messages
 ERR_DAEMON_RUNNING: Final[str] = "Daemon already running with PID {pid}. PID file: {pid_file}"
@@ -42,6 +42,7 @@ class STTDaemon:
         format_output: bool = False,
         instruction_keyword: str | None = None,
         ask_keyword: str | None = None,
+        live: bool = False,
     ) -> None:
         """Initialize daemon.
 
@@ -51,19 +52,33 @@ class STTDaemon:
             format_output: Enable plain-text formatting of refined output.
             instruction_keyword: Keyword to separate content from AI instructions.
             ask_keyword: Keyword at start of speech to trigger AI query mode.
+            live: Enable Live API streaming transcription.
 
         """
         self.config = config
         self.state_machine = StateMachine()
         self.recorder = AudioRecorder()
-        self.transcriber = GeminiTranscriber(
-            api_key=config.api_key,
-            model=config.model,
-            refine=refine,
-            format_output=format_output,
-            instruction_keyword=instruction_keyword,
-            ask_keyword=ask_keyword,
-        )
+        self.transcriber: GeminiTranscriber
+        if live:
+            live_model = config.model if os.getenv("STT_MODEL") else LIVE_MODEL_DEFAULT
+            self.transcriber = GeminiLiveTranscriber(
+                api_key=config.api_key,
+                model=live_model,
+                batch_model=config.model,
+                refine=refine,
+                format_output=format_output,
+                instruction_keyword=instruction_keyword,
+                ask_keyword=ask_keyword,
+            )
+        else:
+            self.transcriber = GeminiTranscriber(
+                api_key=config.api_key,
+                model=config.model,
+                refine=refine,
+                format_output=format_output,
+                instruction_keyword=instruction_keyword,
+                ask_keyword=ask_keyword,
+            )
         self._logger = logging.getLogger(__name__)
         self._audio_path: Path | None = None
         self._transcribed_text: str | None = None
@@ -319,6 +334,7 @@ def run(
     format_output: bool = False,
     instruction_keyword: str | None = None,
     ask_keyword: str | None = None,
+    live: bool = False,
 ) -> NoReturn:
     """Run the STT daemon.
 
@@ -327,6 +343,7 @@ def run(
         format_output: Enable plain-text formatting of refined output.
         instruction_keyword: Keyword to separate content from AI instructions.
         ask_keyword: Keyword at start of speech to trigger AI query mode.
+        live: Enable Live API streaming transcription.
 
     """
     # Setup logging
@@ -342,15 +359,15 @@ def run(
 
     try:
         config = Config.from_env()
+        daemon = STTDaemon(
+            config,
+            refine=refine,
+            format_output=format_output,
+            instruction_keyword=instruction_keyword,
+            ask_keyword=ask_keyword,
+            live=live,
+        )
     except ValueError:
         logger.exception("Configuration error")
         sys.exit(1)
-
-    daemon = STTDaemon(
-        config,
-        refine=refine,
-        format_output=format_output,
-        instruction_keyword=instruction_keyword,
-        ask_keyword=ask_keyword,
-    )
     daemon.run()

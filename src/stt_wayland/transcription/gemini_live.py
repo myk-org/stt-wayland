@@ -1,0 +1,274 @@
+"""Google Gemini Live API transcription service."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import wave
+from typing import TYPE_CHECKING
+
+from google import genai
+from google.genai import types
+
+from .gemini import (
+    ASK_QUERY_PROMPT,
+    CUSTOM_INSTRUCTION_PROMPT,
+    GeminiTranscriber,
+    _raise_empty_response_error,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from typing import Final
+
+# Audio chunk size for streaming (32KB)
+AUDIO_CHUNK_SIZE: Final[int] = 32768
+
+# Live API transcription system instruction
+LIVE_TRANSCRIPTION_INSTRUCTION: Final[str] = (
+    "You are a speech-to-text transcription service. "
+    "Transcribe the spoken words in the audio exactly as spoken. "
+    "Return ONLY the transcribed words. "
+    "NO explanations, NO prefixes, NO meta-commentary, NO markdown. "
+    "If the audio is empty or silent, return exactly: [NO_SPEECH]"
+)
+
+LIVE_TRANSCRIPTION_INSTRUCTION_REFINED: Final[str] = (
+    "You are a speech-to-text transcription service. "
+    "Transcribe the spoken words in the audio. "
+    "After transcription, refine the text by correcting any typos, grammatical errors, "
+    "and improving clarity while preserving the original meaning. "
+    "Return ONLY the refined transcribed text. "
+    "NO explanations, NO prefixes, NO meta-commentary, NO markdown. "
+    "If the audio is empty or silent, return exactly: [NO_SPEECH]"
+)
+
+LIVE_TRANSCRIPTION_INSTRUCTION_FORMATTED: Final[str] = (
+    "You are a speech-to-text transcription service. "
+    "Transcribe the spoken words in the audio. "
+    "After transcription, refine the text by correcting any typos, grammatical errors, "
+    "and improving clarity while preserving the original meaning. "
+    "If the speech contains multiple distinct points, format them as a numbered list (1. 2. 3.) "
+    "or a bulleted list using dashes (-). Use line breaks to separate distinct points. "
+    "Keep simple sentences as plain flowing text. "
+    "Return ONLY the refined transcribed text. "
+    "NO explanations, NO prefixes, NO meta-commentary, NO markdown formatting "
+    "(no bold, italic, headers, code blocks). "
+    "Plain-text lists using dashes or numbers are allowed. "
+    "If the audio is empty or silent, return exactly: [NO_SPEECH]"
+)
+
+
+class GeminiLiveTranscriber(GeminiTranscriber):
+    """Transcribes audio using Google Gemini Live API (WebSocket streaming)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-3.1-flash-live-preview",
+        *,
+        batch_model: str = "gemini-2.5-flash",
+        refine: bool = False,
+        format_output: bool = False,
+        instruction_keyword: str | None = None,
+        ask_keyword: str | None = None,
+    ) -> None:
+        """Initialize Gemini Live transcriber.
+
+        Args:
+            api_key: Google API key.
+            model: Model name to use for Live API (WebSocket streaming).
+            batch_model: Model name for REST API calls (generate_content).
+                The live model only supports WebSocket, so post-processing
+                (instruction/ask keywords) uses this separate model.
+            refine: Enable AI-based typo and grammar correction.
+            format_output: Enable plain-text formatting of refined output.
+            instruction_keyword: Keyword to separate content from AI instructions.
+            ask_keyword: Keyword at start of speech to trigger AI query mode.
+
+        """
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            refine=refine,
+            format_output=format_output,
+            instruction_keyword=instruction_keyword,
+            ask_keyword=ask_keyword,
+        )
+        self._logger = logging.getLogger(__name__)
+
+        if "live" not in model.lower():
+            msg = (
+                f"Model '{model}' is not a Live API model. "
+                f"Live mode requires a model with 'live' in its name "
+                f"(e.g., 'gemini-3.1-flash-live-preview'). "
+                f"Remove --live flag or use a Live API model."
+            )
+            raise ValueError(msg)
+
+        self._live_client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version="v1beta"),
+        )
+        self._batch_model = batch_model
+
+    def _raw_transcribe(self, audio_path: Path) -> str:
+        """Transcribe audio using the Gemini Live API.
+
+        Reads the WAV file, strips the header to get raw PCM data,
+        and sends it through the Live API WebSocket for transcription.
+
+        Args:
+            audio_path: Path to WAV audio file.
+
+        Returns:
+            Raw transcribed text from the API.
+
+        Raises:
+            RuntimeError: If the API returns an empty response.
+            ValueError: If the audio file is not a valid WAV file.
+
+        """
+        # Read WAV file and strip header to get raw PCM
+        pcm_data = self._extract_pcm_from_wav(audio_path)
+        self._logger.info("Extracted %d bytes of PCM data from %s", len(pcm_data), audio_path)
+
+        # Note: asyncio.run() requires no event loop to be running.
+        # This is safe as the daemon's main loop is synchronous.
+        return asyncio.run(self._transcribe_live(pcm_data))
+
+    @staticmethod
+    def _extract_pcm_from_wav(audio_path: Path) -> bytes:
+        """Extract raw PCM data from a WAV file.
+
+        Args:
+            audio_path: Path to WAV audio file.
+
+        Returns:
+            Raw PCM audio data.
+
+        Raises:
+            ValueError: If the file is not a valid WAV file.
+
+        """
+        try:
+            with wave.open(str(audio_path), "rb") as wf:
+                return wf.readframes(wf.getnframes())
+        except wave.Error as e:
+            msg = f"Not a valid WAV file: {audio_path}"
+            raise ValueError(msg) from e
+
+    async def _transcribe_live(self, pcm_data: bytes) -> str:
+        """Send audio to Gemini Live API and collect transcription.
+
+        Args:
+            pcm_data: Raw PCM audio data (16-bit, 16kHz, mono, little-endian).
+
+        Returns:
+            Transcribed text.
+
+        Raises:
+            RuntimeError: If the API returns an empty response.
+
+        """
+        # Select system instruction based on refine/format settings
+        if self._format_output:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION_FORMATTED
+        elif self._refine:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION_REFINED
+        else:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION
+
+        config = types.LiveConnectConfig(
+            response_modalities=[types.Modality.AUDIO],
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            system_instruction=types.Content(parts=[types.Part.from_text(text=instruction)]),
+        )
+
+        async with self._live_client.aio.live.connect(
+            model=self._model,
+            config=config,
+        ) as session:
+            # Send audio in chunks
+            for offset in range(0, len(pcm_data), AUDIO_CHUNK_SIZE):
+                chunk = pcm_data[offset : offset + AUDIO_CHUNK_SIZE]
+                await session.send_realtime_input(
+                    audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"),
+                )
+
+            # Signal end of audio stream
+            await session.send_realtime_input(audio_stream_end=True)
+
+            # Collect input audio transcription
+            text_parts: list[str] = []
+            async for msg in session.receive():
+                if msg.server_content:
+                    # Input transcription contains the STT result
+                    if msg.server_content.input_transcription and msg.server_content.input_transcription.text:
+                        text_parts.append(msg.server_content.input_transcription.text)
+                    # Stop when turn is complete
+                    if msg.server_content.turn_complete:
+                        break
+
+            result = "".join(text_parts).strip()
+            if not result:
+                _raise_empty_response_error()
+
+            return result
+
+    def _apply_instruction(self, content: str, instruction: str) -> str:
+        """Apply an instruction using the batch model (REST API).
+
+        The live model only supports WebSocket, so post-processing
+        uses a separate batch model for generate_content calls.
+
+        Args:
+            content: The text content to process.
+            instruction: The instruction to apply.
+
+        Returns:
+            The processed text.
+
+        Raises:
+            RuntimeError: If the API call fails.
+
+        """
+        prompt = CUSTOM_INSTRUCTION_PROMPT.format(content=content, instruction=instruction)
+
+        response = self._client.models.generate_content(
+            model=self._batch_model,
+            contents=[types.Part.from_text(text=prompt)],
+        )
+
+        if response.text:
+            return str(response.text).strip()
+
+        _raise_empty_response_error()
+
+    def _answer_query(self, query: str) -> str:
+        """Answer a query using the batch model (REST API).
+
+        The live model only supports WebSocket, so post-processing
+        uses a separate batch model for generate_content calls.
+
+        Args:
+            query: The query to send to the AI.
+
+        Returns:
+            The AI's answer.
+
+        Raises:
+            RuntimeError: If the API call fails.
+
+        """
+        prompt = ASK_QUERY_PROMPT.format(query=query)
+
+        response = self._client.models.generate_content(
+            model=self._batch_model,
+            contents=[types.Part.from_text(text=prompt)],
+        )
+
+        if response.text:
+            return str(response.text).strip()
+
+        _raise_empty_response_error()

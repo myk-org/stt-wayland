@@ -11,6 +11,9 @@ from stt_wayland.transcription.gemini import (
     ASK_QUERY_PROMPT,
     CUSTOM_INSTRUCTION_PROMPT,
     ERR_EMPTY_RESPONSE,
+    TRANSCRIPTION_PROMPT,
+    TRANSCRIPTION_PROMPT_WITH_FORMAT,
+    TRANSCRIPTION_PROMPT_WITH_REFINEMENT,
     GeminiTranscriber,
 )
 
@@ -683,3 +686,272 @@ class TestTranscribeWithAskKeyword:
         assert result == "AI response to boom do something"
         # Verify two API calls: transcription + AI query (not instruction apply)
         assert mock_client.models.generate_content.call_count == 2
+
+
+class TestRawTranscribe:
+    """Test _raw_transcribe method."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_returns_stripped_text(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe returns the stripped raw text from the API."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "  Hello world  \n"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        result = transcriber._raw_transcribe(audio_file)
+
+        assert result == "Hello world"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_empty_response_raises_error(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe raises RuntimeError on empty response."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = None
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        with pytest.raises(RuntimeError, match=ERR_EMPTY_RESPONSE):
+            transcriber._raw_transcribe(audio_file)
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_empty_string_response_raises_error(
+        self, mock_client_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test that _raw_transcribe raises RuntimeError on empty string response."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = ""
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        with pytest.raises(RuntimeError, match=ERR_EMPTY_RESPONSE):
+            transcriber._raw_transcribe(audio_file)
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_uses_base_prompt_by_default(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe uses TRANSCRIPTION_PROMPT when refine is off."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        transcriber._raw_transcribe(audio_file)
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        # First content part should be the text prompt
+        assert contents[0].text == TRANSCRIPTION_PROMPT
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_uses_refine_prompt_when_refine_enabled(
+        self, mock_client_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test that _raw_transcribe uses TRANSCRIPTION_PROMPT_WITH_REFINEMENT when refine is on."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", refine=True)
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        transcriber._raw_transcribe(audio_file)
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        assert contents[0].text == TRANSCRIPTION_PROMPT_WITH_REFINEMENT
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_uses_format_prompt_when_format_enabled(
+        self, mock_client_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test that _raw_transcribe uses TRANSCRIPTION_PROMPT_WITH_FORMAT when format is on."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", refine=True, format_output=True)
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        transcriber._raw_transcribe(audio_file)
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        assert contents[0].text == TRANSCRIPTION_PROMPT_WITH_FORMAT
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_uses_configured_model(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe uses the configured model."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", model="custom-model")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        transcriber._raw_transcribe(audio_file)
+
+        call_args = mock_client.models.generate_content.call_args
+        assert call_args.kwargs["model"] == "custom-model"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_reads_audio_file(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe reads the audio file and sends it as audio part."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        transcriber._raw_transcribe(audio_file)
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        # Should have two parts: text prompt + audio part
+        assert len(contents) == 2
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_does_not_check_no_speech(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe returns [NO_SPEECH] as-is without raising."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "[NO_SPEECH]"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        # _raw_transcribe should NOT raise - it returns raw text
+        result = transcriber._raw_transcribe(audio_file)
+        assert result == "[NO_SPEECH]"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_does_not_parse_ask_keyword(self, mock_client_class: MagicMock, tmp_path: Path) -> None:
+        """Test that _raw_transcribe returns text with ask keyword as-is."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "hey what is Python"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        # _raw_transcribe should NOT parse ask keyword - just return raw text
+        result = transcriber._raw_transcribe(audio_file)
+        assert result == "hey what is Python"
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_raw_transcribe_does_not_parse_instruction_keyword(
+        self, mock_client_class: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test that _raw_transcribe returns text with instruction keyword as-is."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Hello world boom refine as poem"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", instruction_keyword="boom")
+
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio data")
+
+        # _raw_transcribe should NOT parse instruction keyword - just return raw text
+        result = transcriber._raw_transcribe(audio_file)
+        assert result == "Hello world boom refine as poem"
+
+
+class TestNoLangParameter:
+    """Test that lang parameter has been removed from GeminiTranscriber."""
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_init_does_not_accept_lang(self, _mock_client_class: MagicMock) -> None:
+        """Test that GeminiTranscriber does not accept a lang parameter."""
+        with pytest.raises(TypeError):
+            GeminiTranscriber(api_key="test-key", lang="English")  # type: ignore[call-arg]
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_no_lang_attribute(self, _mock_client_class: MagicMock) -> None:
+        """Test that GeminiTranscriber has no _lang attribute."""
+        transcriber = GeminiTranscriber(api_key="test-key")
+        assert not hasattr(transcriber, "_lang")
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_apply_instruction_no_lang_directive(self, mock_client_class: MagicMock) -> None:
+        """Test that _apply_instruction does not append language directive."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Result"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key")
+        transcriber._apply_instruction("content", "instruction")
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        prompt_text = contents[0].text
+        assert "CRITICAL LANGUAGE REQUIREMENT" not in prompt_text
+
+    @patch("stt_wayland.transcription.gemini.genai.Client")
+    def test_answer_query_no_lang_directive(self, mock_client_class: MagicMock) -> None:
+        """Test that _answer_query does not append language directive."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Answer"
+        mock_client.models.generate_content.return_value = mock_response
+
+        transcriber = GeminiTranscriber(api_key="test-key", ask_keyword="hey")
+        transcriber._answer_query("what is Python")
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args.kwargs["contents"]
+        prompt_text = contents[0].text
+        assert "CRITICAL LANGUAGE REQUIREMENT" not in prompt_text

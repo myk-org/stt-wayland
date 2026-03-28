@@ -244,6 +244,53 @@ class GeminiTranscriber:
 
         _raise_empty_response_error()
 
+    def _raw_transcribe(self, audio_path: Path) -> str:
+        """Perform raw audio-to-text transcription via the Gemini API.
+
+        Reads the audio file, selects the appropriate prompt, and calls the API.
+        Does not apply any post-processing (no-speech check, ask keyword, or
+        instruction keyword parsing).
+
+        Args:
+            audio_path: Path to audio file.
+
+        Returns:
+            Raw transcribed text from the API.
+
+        Raises:
+            RuntimeError: If the API returns an empty response.
+
+        """
+        # Read audio file
+        with audio_path.open("rb") as f:
+            audio_data = f.read()
+
+        # Create audio part
+        audio_part = types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
+
+        # Select prompt based on refine/format settings
+        if self._format_output:
+            prompt = TRANSCRIPTION_PROMPT_WITH_FORMAT
+        elif self._refine:
+            prompt = TRANSCRIPTION_PROMPT_WITH_REFINEMENT
+        else:
+            prompt = TRANSCRIPTION_PROMPT
+
+        # Generate content with audio
+        response = self._client.models.generate_content(
+            model=self._model,
+            contents=[
+                types.Part.from_text(text=prompt),
+                audio_part,
+            ],
+        )
+
+        if response.text:
+            return str(response.text).strip()
+
+        # Empty response - raise error
+        _raise_empty_response_error()
+
     def transcribe(self, audio_path: Path) -> str:
         """Transcribe audio file.
 
@@ -266,68 +313,37 @@ class GeminiTranscriber:
         self._logger.info("Transcribing %s with %s (%s)", audio_path, self._model, refine_mode)
 
         try:
-            # Upload audio file
-            with audio_path.open("rb") as f:
-                audio_data = f.read()
+            text = self._raw_transcribe(audio_path)
 
-            # Create audio part
-            audio_part = types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
+            # Check for known failure patterns
+            if text == "[NO_SPEECH]" or "cannot transcribe" in text.lower() or "appears to be silent" in text.lower():
+                _raise_no_speech_error()
+            self._logger.info("Transcribed: %s...", text[:100])
 
-            # Select prompt based on refine setting
-            if self._format_output:
-                prompt = TRANSCRIPTION_PROMPT_WITH_FORMAT
-            elif self._refine:
-                prompt = TRANSCRIPTION_PROMPT_WITH_REFINEMENT
-            else:
-                prompt = TRANSCRIPTION_PROMPT
+            # Check for ask keyword at START (takes precedence over instruction keyword)
+            ask_query = self._parse_ask_query(text)
+            if ask_query is not None:
+                if not ask_query:
+                    # Keyword only, no query - return empty string
+                    return ""
+                self._logger.info("Detected ask query: %s", ask_query[:50])
+                return self._answer_query(ask_query)
 
-            # Generate content with audio
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=[
-                    types.Part.from_text(text=prompt),
-                    audio_part,
-                ],
-            )
+            # Check for inline instruction (only if keyword is configured)
+            parsed = self._parse_instruction(text)
+            if parsed:
+                content, instruction = parsed
+                # Handle edge cases
+                if not content:
+                    # "boom" at start - return instruction as content
+                    return instruction if instruction else text
+                if not instruction:
+                    # "boom" at end - return content as-is
+                    return content
+                self._logger.info("Detected instruction: %s", instruction[:50])
+                return self._apply_instruction(content, instruction)
 
-            if response.text:
-                text: str = str(response.text).strip()
-                # Check for known failure patterns
-                if (
-                    text == "[NO_SPEECH]"
-                    or "cannot transcribe" in text.lower()
-                    or "appears to be silent" in text.lower()
-                ):
-                    _raise_no_speech_error()
-                self._logger.info("Transcribed: %s...", text[:100])
-
-                # Check for ask keyword at START (takes precedence over instruction keyword)
-                ask_query = self._parse_ask_query(text)
-                if ask_query is not None:
-                    if not ask_query:
-                        # Keyword only, no query - return empty string
-                        return ""
-                    self._logger.info("Detected ask query: %s", ask_query[:50])
-                    return self._answer_query(ask_query)
-
-                # Check for inline instruction (only if keyword is configured)
-                parsed = self._parse_instruction(text)
-                if parsed:
-                    content, instruction = parsed
-                    # Handle edge cases
-                    if not content:
-                        # "boom" at start - return instruction as content
-                        return instruction if instruction else text
-                    if not instruction:
-                        # "boom" at end - return content as-is
-                        return content
-                    self._logger.info("Detected instruction: %s", instruction[:50])
-                    return self._apply_instruction(content, instruction)
-
-                return text
-
-            # Empty response - raise error
-            _raise_empty_response_error()
+            return text
 
         except Exception as e:
             self._logger.exception("Transcription failed")

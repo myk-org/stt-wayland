@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from typing import Final
 
 ERR_NO_API_KEY: Final[str] = "GEMINI_API_KEY environment variable is required. Set it in .env or export it."
+LIVE_MODEL_DEFAULT: Final[str] = "gemini-3.1-flash-live-preview"
 
 
 @dataclass(frozen=True, slots=True)
