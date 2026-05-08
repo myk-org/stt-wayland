@@ -7,16 +7,19 @@ import logging
 import os
 import signal
 import sys
+import time
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from typing import Final
 
 from .audio import AudioRecorder
 from .config import LIVE_MODEL_DEFAULT, Config
 from .output import (
     notify_error,
+    notify_recording_auto_stopped,
     notify_recording_started,
     notify_recording_stopped,
     notify_transcription_complete,
@@ -82,6 +85,8 @@ class STTDaemon:
         self._logger = logging.getLogger(__name__)
         self._audio_path: Path | None = None
         self._transcribed_text: str | None = None
+        self._recording_start_time: float | None = None
+        self._live = live
 
         # Signal flags (async-safe)
         self._toggle_requested = False
@@ -191,7 +196,12 @@ class STTDaemon:
         """Start recording (IDLE → RECORDING)."""
         self._logger.info("Starting recording")
         try:
-            self.recorder.start_recording()
+            if self._live:
+                self.recorder.start_streaming()
+                self.transcriber.start_streaming(self.recorder)
+            else:
+                self.recorder.start_recording()
+            self._recording_start_time = time.monotonic()
             self.state_machine.set_state(State.RECORDING)
             notify_recording_started()
         except Exception:
@@ -202,8 +212,12 @@ class STTDaemon:
     def _stop_recording(self) -> None:
         """Stop recording (RECORDING → TRANSCRIBING)."""
         self._logger.info("Stopping recording")
+        self._recording_start_time = None
         try:
-            self._audio_path = self.recorder.stop_recording()
+            if self._live:
+                self.recorder.stop_streaming()
+            else:
+                self._audio_path = self.recorder.stop_recording()
             self.state_machine.set_state(State.TRANSCRIBING)
             notify_recording_stopped()
             # Immediately trigger transcription
@@ -214,7 +228,10 @@ class STTDaemon:
             # Ensure recorder is stopped on error
             if self.recorder.is_recording():
                 try:
-                    self.recorder.stop_recording()
+                    if self._live:
+                        self.recorder.stop_streaming()
+                    else:
+                        self.recorder.stop_recording()
                 except Exception:
                     self._logger.exception("Failed to force-stop recorder")
             self.state_machine.transition(Event.ERROR)
@@ -222,6 +239,20 @@ class STTDaemon:
 
     def _transcribe_audio(self) -> None:
         """Transcribe audio (TRANSCRIBING → TYPING)."""
+        if self._live:
+            # Live mode: collect result from real-time streaming transcription
+            self._logger.info("Collecting streaming transcription result")
+            try:
+                self._transcribed_text = self.transcriber.stop_streaming()
+                self.state_machine.set_state(State.TYPING)
+                self.state_machine.transition(Event.TRANSCRIPTION_COMPLETE)
+            except Exception:
+                self._logger.exception("Streaming transcription failed")
+                notify_error("Transcription failed")
+                self.state_machine.transition(Event.ERROR)
+                self.state_machine.set_state(State.IDLE)
+            return
+
         if not self._audio_path:
             self._logger.error("No audio file to transcribe")
             notify_error("No audio file to transcribe")
@@ -321,6 +352,19 @@ class STTDaemon:
                     self._logger.info("Received shutdown signal")
                     self.state_machine.transition(Event.SHUTDOWN)
 
+                # Auto-stop recording if max duration exceeded
+                if (
+                    self._recording_start_time is not None
+                    and self.state_machine.state == State.RECORDING
+                    and time.monotonic() - self._recording_start_time >= self.config.max_recording_duration
+                ):
+                    self._logger.warning(
+                        "Max recording duration (%.0fs) reached, auto-stopping",
+                        self.config.max_recording_duration,
+                    )
+                    self.state_machine.transition(Event.TOGGLE_RECORDING)
+                    notify_recording_auto_stopped()
+
                 # Process state machine events
                 if not self.state_machine.process_events(handlers):
                     break
@@ -338,7 +382,10 @@ class STTDaemon:
         # Stop recording if in progress
         if self.recorder.is_recording():
             try:
-                self.recorder.stop_recording()
+                if self._live:
+                    self.recorder.stop_streaming()
+                else:
+                    self.recorder.stop_recording()
             except Exception:
                 self._logger.exception("Error stopping recorder")
 
@@ -371,11 +418,16 @@ def run(
 
     """
     # Setup logging
+    log_dir = Path.home() / ".local" / "share" / "stt-wayland"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "stt-daemon.log"
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
+            RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3),
         ],
     )
 

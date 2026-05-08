@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 import wave
@@ -21,6 +22,8 @@ from .gemini import (
 if TYPE_CHECKING:
     from pathlib import Path
     from typing import Final
+
+    from stt_wayland.audio.recorder import AudioRecorder
 
 # Audio chunk size for streaming (32KB)
 AUDIO_CHUNK_SIZE: Final[int] = 32768
@@ -130,6 +133,7 @@ class GeminiLiveTranscriber(GeminiTranscriber):
         self._loop_thread.start()
         self._closed = False
         self._client_closed = False
+        self._streaming_future: concurrent.futures.Future[str] | None = None
 
     def _raw_transcribe(self, audio_path: Path) -> str:
         """Transcribe audio using the Gemini Live API.
@@ -240,6 +244,152 @@ class GeminiLiveTranscriber(GeminiTranscriber):
                         break
 
             result = "".join(text_parts).strip()
+            if not result:
+                _raise_empty_response_error()
+
+        return result
+
+    def start_streaming(self, recorder: AudioRecorder) -> None:
+        """Start real-time streaming transcription.
+
+        Opens a Live API WebSocket session and begins consuming audio chunks
+        from the recorder in the background. Call stop_streaming() to finish
+        and retrieve the transcription result.
+
+        Args:
+            recorder: AudioRecorder instance (must already be in streaming mode).
+
+        Raises:
+            RuntimeError: If transcriber is closed or streaming already active.
+
+        """
+        if self._closed or self._client_closed:
+            msg = "Transcriber is closed"
+            raise RuntimeError(msg)
+
+        self._logger.info("Starting real-time streaming transcription with %s", self._model)
+        self._streaming_future = asyncio.run_coroutine_threadsafe(self._transcribe_stream_live(recorder), self._loop)
+
+    def stop_streaming(self) -> str:
+        """Stop streaming transcription and return the result.
+
+        Waits for the background transcription to complete (the recorder
+        must have been stopped first to signal end of stream).
+
+        Returns:
+            Transcribed text.
+
+        Raises:
+            RuntimeError: If transcription fails or times out.
+
+        """
+        if self._streaming_future is None:
+            msg = "No active streaming transcription"
+            raise RuntimeError(msg)
+
+        try:
+            result = self._streaming_future.result(timeout=LIVE_TRANSCRIBE_TIMEOUT)
+        except TimeoutError:
+            if not self._streaming_future.cancel():
+                self._logger.warning("Could not cancel timed-out streaming transcription")
+            msg = f"Streaming transcription timed out after {LIVE_TRANSCRIBE_TIMEOUT} seconds"
+            raise RuntimeError(msg) from None
+        finally:
+            self._streaming_future = None
+
+        return result
+
+    async def _transcribe_stream_live(self, recorder: AudioRecorder) -> str:
+        """Stream audio from recorder to Live API in real-time.
+
+        Sends audio and receives transcription concurrently. The Live API
+        emits transcription results while audio is still streaming, so both
+        must happen in parallel.
+
+        Args:
+            recorder: AudioRecorder instance to read chunks from.
+
+        Returns:
+            Transcribed text.
+
+        """
+        if self._format_output:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION_FORMATTED
+        elif self._refine:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION_REFINED
+        else:
+            instruction = LIVE_TRANSCRIPTION_INSTRUCTION
+
+        config = types.LiveConnectConfig(
+            response_modalities=[types.Modality.AUDIO],
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            system_instruction=types.Content(parts=[types.Part.from_text(text=instruction)]),
+        )
+
+        self._logger.info("Connecting to Live API for streaming transcription")
+        async with self._client.aio.live.connect(
+            model=self._model,
+            config=config,
+        ) as session:
+            self._logger.info("Live API session established")
+
+            # Collect transcription results concurrently while sending audio
+            text_parts: list[str] = []
+            chunks_sent = 0
+            bytes_sent = 0
+
+            async def _receive_transcription() -> None:
+                """Receive transcription results from the Live API."""
+                self._logger.info("Receive task started")
+                async for msg in session.receive():
+                    if msg.server_content:
+                        if msg.server_content.input_transcription and msg.server_content.input_transcription.text:
+                            self._logger.info(
+                                "Received transcription chunk: %s",
+                                msg.server_content.input_transcription.text[:80],
+                            )
+                            text_parts.append(msg.server_content.input_transcription.text)
+                        if msg.server_content.turn_complete:
+                            self._logger.info("Received turn_complete")
+                            break
+
+            # Start receiving in the background — the API sends results
+            # while audio is still streaming, so we must listen concurrently
+            receive_task = asyncio.create_task(_receive_transcription())
+
+            # Stream audio chunks as they arrive from the recorder
+            loop = asyncio.get_running_loop()
+            while True:
+                chunk = await loop.run_in_executor(None, recorder.read_chunk, 0.5)
+                if chunk is None:
+                    self._logger.info("End of audio stream (recorder stopped)")
+                    break
+                if chunk:  # Skip empty chunks (timeout with no data)
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"),
+                    )
+                    chunks_sent += 1
+                    bytes_sent += len(chunk)
+
+            self._logger.info("Sent %d chunks (%d bytes) to Live API", chunks_sent, bytes_sent)
+
+            # Signal end of audio stream and wait for final transcription
+            await session.send_realtime_input(audio_stream_end=True)
+            self._logger.info("Sent audio_stream_end, waiting for transcription result")
+
+            # Wait for receive task with a timeout to avoid hanging forever
+            try:
+                await asyncio.wait_for(asyncio.shield(receive_task), timeout=30)
+            except TimeoutError:
+                self._logger.warning("Receive task timed out after 30s, cancelling")
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+
+            result = "".join(text_parts).strip()
+            self._logger.info("Streaming transcription result: %s", result[:100] if result else "(empty)")
             if not result:
                 _raise_empty_response_error()
 

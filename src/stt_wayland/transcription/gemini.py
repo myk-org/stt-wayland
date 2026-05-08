@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Final
 
+    from stt_wayland.audio.recorder import AudioRecorder
+
 ERR_EMPTY_RESPONSE: Final[str] = "Empty transcription response"
 ERR_NO_SPEECH: Final[str] = "No speech detected in audio"
 TRANSCRIPTION_PROMPT: Final[str] = (
@@ -146,6 +148,34 @@ class GeminiTranscriber:
         Base implementation is a no-op. Subclasses may override to
         clean up additional resources.
         """
+
+    def start_streaming(self, recorder: AudioRecorder) -> None:
+        """Start real-time streaming transcription.
+
+        Only supported by Live API transcriber. Base implementation raises.
+
+        Args:
+            recorder: AudioRecorder instance in streaming mode.
+
+        Raises:
+            NotImplementedError: Always, unless overridden by subclass.
+
+        """
+        raise NotImplementedError
+
+    def stop_streaming(self) -> str:
+        """Stop streaming transcription and return the result.
+
+        Only supported by Live API transcriber. Base implementation raises.
+
+        Returns:
+            Transcribed text.
+
+        Raises:
+            NotImplementedError: Always, unless overridden by subclass.
+
+        """
+        raise NotImplementedError
 
     def _parse_instruction(self, text: str) -> tuple[str, str] | None:
         """Parse text for instruction keyword and split into content and instruction.

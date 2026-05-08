@@ -106,3 +106,13 @@ def notify_error(message: str) -> None:
         icon=ICON_ERROR,
         urgency=URGENCY_CRITICAL,
     )
+
+
+def notify_recording_auto_stopped() -> None:
+    """Show notification when recording is auto-stopped due to max duration."""
+    _send_notification(
+        summary="Recording Stopped",
+        body="Maximum recording duration reached",
+        icon=ICON_RECORDING,
+        urgency=URGENCY_NORMAL,
+    )

@@ -3,6 +3,7 @@
 from .clipboard import copy_to_clipboard
 from .notify import (
     notify_error,
+    notify_recording_auto_stopped,
     notify_recording_started,
     notify_recording_stopped,
     notify_transcription_complete,
@@ -14,6 +15,7 @@ __all__ = [
     "paste_text",
     "type_text",
     "notify_error",
+    "notify_recording_auto_stopped",
     "notify_recording_started",
     "notify_recording_stopped",
     "notify_transcription_complete",
