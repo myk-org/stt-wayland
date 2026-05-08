@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -98,22 +99,24 @@ def _make_client_factory() -> tuple[MagicMock, MagicMock, MagicMock]:
 
     The factory uses side_effect to distinguish between:
     - Parent client call: genai.Client(api_key=...) -- no http_options
-    - Live client call: genai.Client(api_key=..., http_options=...) -- with http_options
+    - Live (v1beta) client call: genai.Client(api_key=..., http_options=...) -- with http_options
+
+    After __init__, self._client is the v1beta client (the second call overrides the first).
 
     Returns:
-        A tuple of (mock_class, mock_parent_client, mock_live_client).
+        A tuple of (mock_class, mock_parent_client, mock_v1beta_client).
 
     """
     mock_parent_client = MagicMock(name="parent_client")
-    mock_live_client = MagicMock(name="live_client")
+    mock_v1beta_client = MagicMock(name="v1beta_client")
 
     def _factory(**kwargs: object) -> MagicMock:
         if "http_options" in kwargs:
-            return mock_live_client
+            return mock_v1beta_client
         return mock_parent_client
 
     mock_class = MagicMock(side_effect=_factory)
-    return mock_class, mock_parent_client, mock_live_client
+    return mock_class, mock_parent_client, mock_v1beta_client
 
 
 class TestGeminiLiveTranscriberInit:
@@ -163,27 +166,27 @@ class TestGeminiLiveTranscriberInit:
 
     @patch(_GENAI_CLIENT_PATCH)
     def test_init_creates_two_clients(self, mock_class: MagicMock) -> None:
-        """Test that genai.Client is called twice: once for parent, once for live."""
+        """Test that genai.Client is called twice: once for parent, once to override with v1beta."""
         GeminiLiveTranscriber(api_key="test-key")
 
         assert mock_class.call_count == 2
         # First call: parent client (no http_options)
         parent_call = mock_class.call_args_list[0]
         assert parent_call == ((), {"api_key": "test-key"})
-        # Second call: live client (with http_options for v1beta)
-        live_call = mock_class.call_args_list[1]
-        assert live_call.kwargs["api_key"] == "test-key"
-        assert live_call.kwargs["http_options"].api_version == "v1beta"
+        # Second call: v1beta client that replaces parent's _client
+        v1beta_call = mock_class.call_args_list[1]
+        assert v1beta_call.kwargs["api_key"] == "test-key"
+        assert v1beta_call.kwargs["http_options"].api_version == "v1beta"
 
     @patch(_GENAI_CLIENT_PATCH)
-    def test_init_live_client_uses_v1beta(self, mock_class: MagicMock) -> None:
-        """Test that the live client is created with api_version='v1beta'."""
-        mock_class_obj, _mock_parent, mock_live = _make_client_factory()
+    def test_init_client_uses_v1beta(self, mock_class: MagicMock) -> None:
+        """Test that self._client is the v1beta client (overrides parent's)."""
+        mock_class_obj, _mock_parent, mock_v1beta = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         transcriber = GeminiLiveTranscriber(api_key="test-key")
 
-        assert transcriber._live_client is mock_live
+        assert transcriber._client is mock_v1beta
 
     @patch(_GENAI_CLIENT_PATCH)
     def test_is_subclass_of_gemini_transcriber(self, _mock_class: MagicMock) -> None:
@@ -766,7 +769,7 @@ class TestLiveTranscriberIntegration:
     @patch(_GENAI_CLIENT_PATCH)
     def test_transcribe_delegates_to_raw_transcribe(self, mock_class: MagicMock, tmp_path: Path) -> None:
         """Test that parent's transcribe() calls the overridden _raw_transcribe."""
-        mock_class_obj, mock_parent, mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_live = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         mock_session = MagicMock()
@@ -792,9 +795,9 @@ class TestLiveTranscriberIntegration:
         result = transcriber.transcribe(wav_file)
 
         assert result == "Hello world"
-        # Verify it used live_client.aio.live.connect, NOT parent's models.generate_content
+        # Verify it used _client.aio.live.connect (v1beta), NOT generate_content
         mock_live.aio.live.connect.assert_called_once()
-        mock_parent.models.generate_content.assert_not_called()
+        mock_live.models.generate_content.assert_not_called()
 
     @patch(_GENAI_CLIENT_PATCH)
     def test_transcribe_no_speech_raises(self, mock_class: MagicMock, tmp_path: Path) -> None:
@@ -828,7 +831,7 @@ class TestLiveTranscriberIntegration:
     @patch(_GENAI_CLIENT_PATCH)
     def test_transcribe_with_ask_keyword(self, mock_class: MagicMock, tmp_path: Path) -> None:
         """Test that ask keyword works through parent's transcribe() with live backend."""
-        mock_class_obj, mock_parent, mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_live = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         # Live API returns text starting with ask keyword
@@ -847,10 +850,10 @@ class TestLiveTranscriberIntegration:
         mock_connect.__aenter__.return_value = mock_session
         mock_live.aio.live.connect.return_value = mock_connect
 
-        # Mock the generate_content for the ask query answer (uses parent client)
+        # Mock the generate_content for the ask query answer (uses self._client, the v1beta one)
         ai_answer_response = MagicMock()
         ai_answer_response.text = "Python is a programming language"
-        mock_parent.models.generate_content.return_value = ai_answer_response
+        mock_live.models.generate_content.return_value = ai_answer_response
 
         transcriber = GeminiLiveTranscriber(api_key="test-key", ask_keyword="hey")
 
@@ -864,7 +867,7 @@ class TestLiveTranscriberIntegration:
     @patch(_GENAI_CLIENT_PATCH)
     def test_apply_instruction_uses_batch_model(self, mock_class: MagicMock, tmp_path: Path) -> None:
         """Test that _apply_instruction uses _batch_model, not _model."""
-        mock_class_obj, mock_parent, mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_live = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         # Live API returns text with instruction keyword
@@ -883,10 +886,10 @@ class TestLiveTranscriberIntegration:
         mock_connect.__aenter__.return_value = mock_session
         mock_live.aio.live.connect.return_value = mock_connect
 
-        # Mock the generate_content for the instruction processing (uses parent client)
+        # Mock the generate_content for the instruction processing (uses self._client, v1beta)
         instruction_response = MagicMock()
         instruction_response.text = "du contenu"
-        mock_parent.models.generate_content.return_value = instruction_response
+        mock_live.models.generate_content.return_value = instruction_response
 
         transcriber = GeminiLiveTranscriber(
             api_key="test-key",
@@ -901,13 +904,13 @@ class TestLiveTranscriberIntegration:
 
         assert result == "du contenu"
         # Verify generate_content was called with batch_model, NOT the live model
-        call_args = mock_parent.models.generate_content.call_args
+        call_args = mock_live.models.generate_content.call_args
         assert call_args.kwargs["model"] == "gemini-2.5-flash"
 
     @patch(_GENAI_CLIENT_PATCH)
     def test_answer_query_uses_batch_model(self, mock_class: MagicMock, tmp_path: Path) -> None:
         """Test that _answer_query uses _batch_model, not _model."""
-        mock_class_obj, mock_parent, mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_live = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         # Live API returns text starting with ask keyword
@@ -926,10 +929,10 @@ class TestLiveTranscriberIntegration:
         mock_connect.__aenter__.return_value = mock_session
         mock_live.aio.live.connect.return_value = mock_connect
 
-        # Mock the generate_content for the ask query answer (uses parent client)
+        # Mock the generate_content for the ask query answer (uses self._client, v1beta)
         ai_answer_response = MagicMock()
         ai_answer_response.text = "Paris"
-        mock_parent.models.generate_content.return_value = ai_answer_response
+        mock_live.models.generate_content.return_value = ai_answer_response
 
         transcriber = GeminiLiveTranscriber(
             api_key="test-key",
@@ -944,7 +947,7 @@ class TestLiveTranscriberIntegration:
 
         assert result == "Paris"
         # Verify generate_content was called with batch_model, NOT the live model
-        call_args = mock_parent.models.generate_content.call_args
+        call_args = mock_live.models.generate_content.call_args
         assert call_args.kwargs["model"] == "gemini-2.5-flash"
 
 
@@ -966,17 +969,17 @@ class TestNoLiveLangParameter:
     @patch(_GENAI_CLIENT_PATCH)
     def test_live_apply_instruction_no_lang_directive(self, mock_class: MagicMock) -> None:
         """Test that live _apply_instruction does not append language directive."""
-        mock_class_obj, mock_parent, _mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_v1beta = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         mock_response = MagicMock()
         mock_response.text = "Result"
-        mock_parent.models.generate_content.return_value = mock_response
+        mock_v1beta.models.generate_content.return_value = mock_response
 
         transcriber = GeminiLiveTranscriber(api_key="test-key")
         transcriber._apply_instruction("content", "instruction")
 
-        call_args = mock_parent.models.generate_content.call_args
+        call_args = mock_v1beta.models.generate_content.call_args
         contents = call_args.kwargs["contents"]
         prompt_text = contents[0].text
         assert "CRITICAL LANGUAGE REQUIREMENT" not in prompt_text
@@ -984,17 +987,91 @@ class TestNoLiveLangParameter:
     @patch(_GENAI_CLIENT_PATCH)
     def test_live_answer_query_no_lang_directive(self, mock_class: MagicMock) -> None:
         """Test that live _answer_query does not append language directive."""
-        mock_class_obj, mock_parent, _mock_live = _make_client_factory()
+        mock_class_obj, _mock_parent, mock_v1beta = _make_client_factory()
         mock_class.side_effect = mock_class_obj.side_effect
 
         mock_response = MagicMock()
         mock_response.text = "Answer"
-        mock_parent.models.generate_content.return_value = mock_response
+        mock_v1beta.models.generate_content.return_value = mock_response
 
         transcriber = GeminiLiveTranscriber(api_key="test-key", ask_keyword="hey")
         transcriber._answer_query("what is Python")
 
-        call_args = mock_parent.models.generate_content.call_args
+        call_args = mock_v1beta.models.generate_content.call_args
         contents = call_args.kwargs["contents"]
         prompt_text = contents[0].text
         assert "CRITICAL LANGUAGE REQUIREMENT" not in prompt_text
+
+
+class TestGeminiLiveTranscriberClose:
+    """Tests for GeminiLiveTranscriber.close() lifecycle."""
+
+    @patch(_GENAI_CLIENT_PATCH)
+    def test_close_stops_event_loop(self, _mock_class: MagicMock) -> None:
+        """Test that close() stops the persistent event loop."""
+        transcriber = GeminiLiveTranscriber(api_key="test-key")
+
+        assert transcriber._loop.is_running()
+        assert transcriber._loop_thread.is_alive()
+
+        transcriber.close()
+
+        assert not transcriber._loop.is_running()
+        assert not transcriber._loop_thread.is_alive()
+        assert transcriber._loop.is_closed()
+
+    @patch(_GENAI_CLIENT_PATCH)
+    def test_close_is_idempotent(self, _mock_class: MagicMock) -> None:
+        """Test that calling close() multiple times is safe."""
+        transcriber = GeminiLiveTranscriber(api_key="test-key")
+
+        transcriber.close()
+        # Second close should not raise
+        transcriber.close()
+
+        assert transcriber._closed
+
+    @patch(_GENAI_CLIENT_PATCH)
+    def test_close_sets_closed_flag(self, _mock_class: MagicMock) -> None:
+        """Test that close() sets the _closed flag."""
+        transcriber = GeminiLiveTranscriber(api_key="test-key")
+
+        assert not transcriber._closed
+        transcriber.close()
+        assert transcriber._closed
+
+    @patch(_GENAI_CLIENT_PATCH)
+    def test_raw_transcribe_after_close_raises(self, _mock_class: MagicMock) -> None:
+        """Test that _raw_transcribe raises RuntimeError after close()."""
+        transcriber = GeminiLiveTranscriber(api_key="test-key")
+        transcriber.close()
+
+        with pytest.raises(RuntimeError, match="Transcriber is closed"):
+            transcriber._raw_transcribe(Path("/tmp/dummy.wav"))
+
+
+class TestGeminiLiveTranscriberTimeout:
+    """Tests for timeout and cancellation behavior."""
+
+    @patch("stt_wayland.transcription.gemini_live.LIVE_TRANSCRIBE_TIMEOUT", 0.1)
+    @patch(_GENAI_CLIENT_PATCH)
+    def test_timeout_cancels_future(self, _mock_class: MagicMock, tmp_path: Path) -> None:
+        """Test that a timeout on future.result cancels the task and raises RuntimeError."""
+        transcriber = GeminiLiveTranscriber(api_key="test-key")
+
+        # Create a valid WAV file
+        wav_file = tmp_path / "test.wav"
+        _make_wav_file(wav_file)
+
+        # Replace _transcribe_live with a coroutine that hangs
+        async def hang_forever(_pcm_data: bytes) -> str:
+            await asyncio.sleep(3600)
+            return "never reached"
+
+        transcriber._transcribe_live = hang_forever  # type: ignore[assignment]
+
+        # Call the real _raw_transcribe (patched timeout to 0.1s)
+        with pytest.raises(RuntimeError, match="timed out"):
+            transcriber.transcribe(wav_file)
+
+        transcriber.close()

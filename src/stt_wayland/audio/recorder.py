@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import queue
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -127,6 +129,109 @@ class AudioRecorder:
 
         self._logger.info("Recording saved: %s", self.output_path)
         return self.output_path
+
+    def start_streaming(self) -> None:
+        """Start audio recording in streaming mode (raw PCM to stdout).
+
+        Audio chunks are buffered internally and can be read via read_chunk().
+
+        Raises:
+            RuntimeError: If already recording.
+
+        """
+        if self._process is not None:
+            msg = ERR_ALREADY_RECORDING
+            raise RuntimeError(msg)
+
+        # For streaming, we output raw PCM to stdout instead of WAV to file
+        if self._recorder_cmd == "pw-record":
+            cmd = [
+                "pw-record",
+                "--rate",
+                "16000",
+                "--channels",
+                "1",
+                "--format",
+                "s16",
+                "-",  # stdout
+            ]
+        else:  # parecord
+            cmd = [
+                "parecord",
+                "--rate=16000",
+                "--channels=1",
+                "--format=s16le",
+                "--raw",
+            ]
+
+        self._logger.info("Starting streaming recording: %s", " ".join(cmd))
+        self._chunk_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
+        self._process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # noqa: S603
+
+        # Background thread to read chunks from recorder stdout
+        self._reader_thread = threading.Thread(
+            target=self._read_audio_chunks,
+            daemon=True,
+            name="audio-chunk-reader",
+        )
+        self._reader_thread.start()
+
+    def _read_audio_chunks(self) -> None:
+        """Read PCM chunks from recorder stdout and put them in the queue."""
+        assert self._process is not None  # noqa: S101
+        assert self._process.stdout is not None  # noqa: S101
+        try:
+            while True:
+                chunk = self._process.stdout.read(32768)  # 32KB chunks
+                if not chunk:
+                    break
+                try:
+                    self._chunk_queue.put(chunk, timeout=1.0)
+                except queue.Full:
+                    self._logger.warning("Audio chunk queue full, dropping chunk")
+        except Exception:
+            self._logger.exception("Error reading audio chunks")
+        finally:
+            self._chunk_queue.put(None)  # Sentinel to signal end of stream
+
+    def read_chunk(self, timeout: float = 1.0) -> bytes | None:
+        """Read the next audio chunk from the streaming buffer.
+
+        Args:
+            timeout: Maximum time to wait for a chunk.
+
+        Returns:
+            Raw PCM audio data, or None if the stream has ended.
+
+        """
+        try:
+            return self._chunk_queue.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+
+    def stop_streaming(self) -> None:
+        """Stop streaming recording.
+
+        Raises:
+            RuntimeError: If not recording.
+
+        """
+        if self._process is None:
+            msg = ERR_NO_RECORDING
+            raise RuntimeError(msg)
+
+        self._logger.info("Stopping streaming recording")
+        self._process.terminate()
+
+        try:
+            self._process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._logger.warning("Recorder did not terminate, killing")
+            self._process.kill()
+            self._process.communicate()
+
+        self._process = None
+        self._logger.info("Streaming recording stopped")
 
     def is_recording(self) -> bool:
         """Check if currently recording.

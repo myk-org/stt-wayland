@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import re
 from typing import TYPE_CHECKING, NoReturn
@@ -12,6 +13,8 @@ from google.genai import types
 if TYPE_CHECKING:
     from pathlib import Path
     from typing import Final
+
+    from stt_wayland.audio.recorder import AudioRecorder
 
 ERR_EMPTY_RESPONSE: Final[str] = "Empty transcription response"
 ERR_NO_SPEECH: Final[str] = "No speech detected in audio"
@@ -139,6 +142,41 @@ class GeminiTranscriber:
         self._ask_keyword = ask_keyword
         self._logger = logging.getLogger(__name__)
 
+    def close(self) -> None:
+        """Close the transcriber and release resources.
+
+        Base implementation is a no-op. Subclasses may override to
+        clean up additional resources.
+        """
+
+    def start_streaming(self, recorder: AudioRecorder) -> None:
+        """Start real-time streaming transcription.
+
+        Only supported by Live API transcriber. Base implementation raises.
+
+        Args:
+            recorder: AudioRecorder instance in streaming mode.
+
+        Raises:
+            NotImplementedError: Always, unless overridden by subclass.
+
+        """
+        raise NotImplementedError
+
+    def stop_streaming(self) -> str:
+        """Stop streaming transcription and return the result.
+
+        Only supported by Live API transcriber. Base implementation raises.
+
+        Returns:
+            Transcribed text.
+
+        Raises:
+            NotImplementedError: Always, unless overridden by subclass.
+
+        """
+        raise NotImplementedError
+
     def _parse_instruction(self, text: str) -> tuple[str, str] | None:
         """Parse text for instruction keyword and split into content and instruction.
 
@@ -265,8 +303,9 @@ class GeminiTranscriber:
         with audio_path.open("rb") as f:
             audio_data = f.read()
 
-        # Create audio part
+        # Create audio part and free raw bytes immediately
         audio_part = types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
+        del audio_data
 
         # Select prompt based on refine/format settings
         if self._format_output:
@@ -349,3 +388,5 @@ class GeminiTranscriber:
             self._logger.exception("Transcription failed")
             msg = f"Transcription failed: {e}"
             raise RuntimeError(msg) from e
+        finally:
+            gc.collect()
