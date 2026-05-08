@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import re
 from typing import TYPE_CHECKING, NoReturn
@@ -139,6 +140,13 @@ class GeminiTranscriber:
         self._ask_keyword = ask_keyword
         self._logger = logging.getLogger(__name__)
 
+    def close(self) -> None:
+        """Close the transcriber and release resources.
+
+        Base implementation is a no-op. Subclasses may override to
+        clean up additional resources.
+        """
+
     def _parse_instruction(self, text: str) -> tuple[str, str] | None:
         """Parse text for instruction keyword and split into content and instruction.
 
@@ -265,8 +273,9 @@ class GeminiTranscriber:
         with audio_path.open("rb") as f:
             audio_data = f.read()
 
-        # Create audio part
+        # Create audio part and free raw bytes immediately
         audio_part = types.Part.from_bytes(data=audio_data, mime_type="audio/wav")
+        del audio_data
 
         # Select prompt based on refine/format settings
         if self._format_output:
@@ -349,3 +358,5 @@ class GeminiTranscriber:
             self._logger.exception("Transcription failed")
             msg = f"Transcription failed: {e}"
             raise RuntimeError(msg) from e
+        finally:
+            gc.collect()

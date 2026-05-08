@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import wave
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
 
 # Audio chunk size for streaming (32KB)
 AUDIO_CHUNK_SIZE: Final[int] = 32768
+
+# Timeout for live transcription (seconds)
+LIVE_TRANSCRIBE_TIMEOUT: Final[float] = 120
 
 # Live API transcription system instruction
 LIVE_TRANSCRIPTION_INSTRUCTION: Final[str] = (
@@ -106,11 +110,26 @@ class GeminiLiveTranscriber(GeminiTranscriber):
             )
             raise ValueError(msg)
 
-        self._live_client = genai.Client(
+        # Replace parent's client with one that uses v1beta API version.
+        # v1beta is required for Live API and is backward compatible
+        # with generate_content calls used for batch operations.
+        self._client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(api_version="v1beta"),
         )
         self._batch_model = batch_model
+
+        # Create a persistent event loop in a background daemon thread
+        # to avoid creating/destroying loops on every transcription call.
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever,
+            name="gemini-live-event-loop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        self._closed = False
+        self._client_closed = False
 
     def _raw_transcribe(self, audio_path: Path) -> str:
         """Transcribe audio using the Gemini Live API.
@@ -125,17 +144,27 @@ class GeminiLiveTranscriber(GeminiTranscriber):
             Raw transcribed text from the API.
 
         Raises:
-            RuntimeError: If the API returns an empty response.
+            RuntimeError: If the API returns an empty response or transcriber is closed.
             ValueError: If the audio file is not a valid WAV file.
 
         """
+        if self._closed or self._client_closed:
+            msg = "Transcriber is closed"
+            raise RuntimeError(msg)
+
         # Read WAV file and strip header to get raw PCM
         pcm_data = self._extract_pcm_from_wav(audio_path)
         self._logger.info("Extracted %d bytes of PCM data from %s", len(pcm_data), audio_path)
 
-        # Note: asyncio.run() requires no event loop to be running.
-        # This is safe as the daemon's main loop is synchronous.
-        return asyncio.run(self._transcribe_live(pcm_data))
+        # Submit to the persistent event loop thread
+        future = asyncio.run_coroutine_threadsafe(self._transcribe_live(pcm_data), self._loop)
+        try:
+            return future.result(timeout=LIVE_TRANSCRIBE_TIMEOUT)
+        except TimeoutError:
+            if not future.cancel():
+                self._logger.warning("Could not cancel timed-out live transcription task")
+            msg = f"Live transcription timed out after {LIVE_TRANSCRIBE_TIMEOUT} seconds"
+            raise RuntimeError(msg) from None
 
     @staticmethod
     def _extract_pcm_from_wav(audio_path: Path) -> bytes:
@@ -185,7 +214,7 @@ class GeminiLiveTranscriber(GeminiTranscriber):
             system_instruction=types.Content(parts=[types.Part.from_text(text=instruction)]),
         )
 
-        async with self._live_client.aio.live.connect(
+        async with self._client.aio.live.connect(
             model=self._model,
             config=config,
         ) as session:
@@ -214,7 +243,38 @@ class GeminiLiveTranscriber(GeminiTranscriber):
             if not result:
                 _raise_empty_response_error()
 
-            return result
+        return result
+
+    def close(self) -> None:
+        """Close the transcriber and release resources.
+
+        Closes the genai client, stops the persistent event loop, and joins
+        the background thread. Safe to call multiple times.
+        """
+        if self._closed:
+            return
+
+        # Close the genai client (sync + async sides) — only once
+        if not self._client_closed:
+            try:
+                if self._loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(self._client.aio.aclose(), self._loop)
+                    future.result(timeout=5)
+                self._client.close()
+                self._client_closed = True
+            except Exception:
+                self._logger.exception("Error closing genai client")
+
+        if self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join(timeout=5)
+        if self._loop_thread.is_alive():
+            self._logger.warning("Event loop thread did not stop in time; close() can be retried")
+        else:
+            if not self._loop.is_closed():
+                self._loop.close()
+            self._closed = True
+            self._logger.info("Gemini Live transcriber closed")
 
     def _apply_instruction(self, content: str, instruction: str) -> str:
         """Apply an instruction using the batch model (REST API).

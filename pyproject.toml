@@ -73,3 +73,9 @@ omit = ["*/tests/*", "*/__pycache__/*", "*/.venv/*"]
 precision = 2
 show_missing = true
 skip_covered = false
+
+[dependency-groups]
+dev = [
+    "mypy>=2.0.0",
+    "ruff>=0.15.12",
+]

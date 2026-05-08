@@ -92,6 +92,18 @@ class STTDaemon:
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
 
+    def _log_memory_usage(self) -> None:
+        """Log current resident memory usage."""
+        try:
+            with open("/proc/self/status") as f:  # noqa: PTH123
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss_kb = int(line.split()[1])
+                        self._logger.info("Memory usage: RSS=%dMB", rss_kb // 1024)
+                        return
+        except Exception:
+            self._logger.debug("Could not read memory usage")
+
     def _handle_toggle_signal(self, _signum: int, _frame: object) -> None:
         """Handle SIGUSR1 signal to toggle recording.
 
@@ -291,7 +303,13 @@ class STTDaemon:
 
         try:
             self._logger.info("Daemon ready, waiting for SIGUSR1 to toggle recording")
+            loop_count = 0
             while True:
+                loop_count += 1
+                if loop_count % 600 == 0:  # ~60 seconds (0.1s per iteration)
+                    self._log_memory_usage()
+                    loop_count = 0
+
                 # Process signal flags (async-safe pattern)
                 if self._toggle_requested:
                     self._toggle_requested = False
@@ -323,6 +341,12 @@ class STTDaemon:
                 self.recorder.stop_recording()
             except Exception:
                 self._logger.exception("Error stopping recorder")
+
+        # Release transcriber resources (connection pools, event loops)
+        try:
+            self.transcriber.close()
+        except Exception:
+            self._logger.exception("Error closing transcriber")
 
         self._remove_pid_file()
         self._logger.info("Daemon stopped")
