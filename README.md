@@ -13,7 +13,6 @@ Wayland-native Speech-to-Text daemon using Google Gemini API.
 - **AI refinement**: Optional typo and grammar correction via `--refine`
 - **Inline AI instructions**: Speak custom AI instructions using a keyword separator
 - **Voice query mode**: Ask AI questions and get answers typed out via `--ask-keyword`
-- **Live streaming**: Real-time transcription while recording via `--live` (streams audio to Gemini Live API as you speak)
 - **Max recording duration**: Auto-stops recording after 5 minutes (configurable via `STT_MAX_RECORDING`)
 
 ## Requirements
@@ -212,32 +211,6 @@ stt-daemon --ask-keyword hey
 - You can combine with other flags: `stt-daemon --ask-keyword hey --instruction-keyword boom`
 - When both keywords are configured, `--ask-keyword` takes precedence (checked first)
 
-### `--live`
-
-Enable real-time streaming transcription using the Gemini Live API. Instead of recording a complete audio file and then uploading it, audio is streamed to the API in real-time while you speak.
-
-```bash
-stt-daemon --live
-```
-
-**How it works:**
-- When recording starts, a WebSocket connection opens to the Gemini Live API
-- Audio chunks (raw PCM, 16kHz) are streamed to the API as they are captured
-- When recording stops, the transcription result is collected immediately
-- Uses `gemini-3.1-flash-live-preview` model by default (override with `STT_MODEL`)
-
-**Benefits:**
-- Faster results — transcription begins while you're still speaking
-- Lower memory usage — no large WAV file buffered in memory
-- Better for long recordings — audio is processed incrementally
-
-**Combine with other flags:**
-```bash
-stt-daemon --live --refine
-stt-daemon --live --ask-keyword hey
-stt-daemon --live --refine --format --instruction-keyword boom
-```
-
 ### Stop the daemon
 
 ```bash
@@ -292,12 +265,6 @@ exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --ask-keyword h
 # Combined: voice queries + inline instructions
 exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --ask-keyword hey --instruction-keyword boom
 
-# Live streaming mode (real-time transcription)
-exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --live
-
-# Live streaming with refinement and voice queries
-exec env GEMINI_API_KEY="<YOUR_KEY>" $HOME/.local/bin/stt-daemon --live --refine --ask-keyword hey
-
 # Press Super+R to toggle: first press starts recording, second press stops and transcribes
 bindsym $mod+r exec pkill -USR1 stt-daemon
 ```
@@ -312,8 +279,7 @@ src/stt_wayland/
 ├── audio/
 │   └── recorder.py     # pw-record/parecord wrapper
 ├── transcription/
-│   ├── gemini.py       # Google Gemini API client (batch mode)
-│   └── gemini_live.py  # Google Gemini Live API client (real-time streaming)
+│   └── gemini.py       # Google Gemini API client
 └── output/
     ├── wtype.py        # wtype text output and clipboard paste
     └── clipboard.py    # wl-copy clipboard operations

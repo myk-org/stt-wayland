@@ -6,19 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from stt_wayland.config import ERR_NO_API_KEY, LIVE_MODEL_DEFAULT, Config
-
-
-class TestConstants:
-    """Test module-level constants."""
-
-    def test_live_model_default_value(self) -> None:
-        """Test LIVE_MODEL_DEFAULT has the expected model name."""
-        assert LIVE_MODEL_DEFAULT == "gemini-3.1-flash-live-preview"
-
-    def test_live_model_default_is_str(self) -> None:
-        """Test LIVE_MODEL_DEFAULT is a string."""
-        assert isinstance(LIVE_MODEL_DEFAULT, str)
+from stt_wayland.config import ERR_NO_API_KEY, Config
 
 
 class TestConfig:
