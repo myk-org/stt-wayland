@@ -35,12 +35,6 @@ def main() -> None:
         default=None,
         help="Keyword at start of speech triggers AI query mode - AI's answer is typed instead of transcription",
     )
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        default=False,
-        help="Enable Live API streaming transcription (uses gemini-3.1-flash-live-preview by default)",
-    )
     args = parser.parse_args()
 
     if args.format and not args.refine:
@@ -51,7 +45,6 @@ def main() -> None:
         format_output=args.format,
         instruction_keyword=args.instruction_keyword,
         ask_keyword=args.ask_keyword,
-        live=args.live,
     )
 
 

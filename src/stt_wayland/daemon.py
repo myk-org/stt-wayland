@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from typing import Final
 
 from .audio import AudioRecorder
-from .config import LIVE_MODEL_DEFAULT, Config
+from .config import Config
 from .output import (
     notify_error,
     notify_recording_auto_stopped,
@@ -27,7 +27,7 @@ from .output import (
     type_text,
 )
 from .state_machine import Event, State, StateMachine
-from .transcription import GeminiLiveTranscriber, GeminiTranscriber
+from .transcription import GeminiTranscriber
 
 # Error messages
 ERR_DAEMON_RUNNING: Final[str] = "Daemon already running with PID {pid}. PID file: {pid_file}"
@@ -45,7 +45,6 @@ class STTDaemon:
         format_output: bool = False,
         instruction_keyword: str | None = None,
         ask_keyword: str | None = None,
-        live: bool = False,
     ) -> None:
         """Initialize daemon.
 
@@ -55,38 +54,23 @@ class STTDaemon:
             format_output: Enable plain-text formatting of refined output.
             instruction_keyword: Keyword to separate content from AI instructions.
             ask_keyword: Keyword at start of speech to trigger AI query mode.
-            live: Enable Live API streaming transcription.
 
         """
         self.config = config
         self.state_machine = StateMachine()
         self.recorder = AudioRecorder()
-        self.transcriber: GeminiTranscriber
-        if live:
-            live_model = config.model if os.getenv("STT_MODEL") else LIVE_MODEL_DEFAULT
-            self.transcriber = GeminiLiveTranscriber(
-                api_key=config.api_key,
-                model=live_model,
-                batch_model=config.model,
-                refine=refine,
-                format_output=format_output,
-                instruction_keyword=instruction_keyword,
-                ask_keyword=ask_keyword,
-            )
-        else:
-            self.transcriber = GeminiTranscriber(
-                api_key=config.api_key,
-                model=config.model,
-                refine=refine,
-                format_output=format_output,
-                instruction_keyword=instruction_keyword,
-                ask_keyword=ask_keyword,
-            )
+        self.transcriber = GeminiTranscriber(
+            api_key=config.api_key,
+            model=config.model,
+            refine=refine,
+            format_output=format_output,
+            instruction_keyword=instruction_keyword,
+            ask_keyword=ask_keyword,
+        )
         self._logger = logging.getLogger(__name__)
         self._audio_path: Path | None = None
         self._transcribed_text: str | None = None
         self._recording_start_time: float | None = None
-        self._live = live
 
         # Signal flags (async-safe)
         self._toggle_requested = False
@@ -163,7 +147,7 @@ class STTDaemon:
                     os.kill(existing_pid, 0)
                     msg = ERR_DAEMON_RUNNING.format(pid=existing_pid, pid_file=pid_file)
                     raise RuntimeError(msg) from e
-                except (ProcessLookupError, ValueError):
+                except ProcessLookupError, ValueError:
                     # Process not running or invalid PID, remove stale file
                     self._logger.warning("Removing stale PID file: %s", pid_file)
                     pid_file.unlink()
@@ -196,11 +180,7 @@ class STTDaemon:
         """Start recording (IDLE → RECORDING)."""
         self._logger.info("Starting recording")
         try:
-            if self._live:
-                self.recorder.start_streaming()
-                self.transcriber.start_streaming(self.recorder)
-            else:
-                self.recorder.start_recording()
+            self.recorder.start_recording()
             self._recording_start_time = time.monotonic()
             self.state_machine.set_state(State.RECORDING)
             notify_recording_started()
@@ -214,10 +194,7 @@ class STTDaemon:
         self._logger.info("Stopping recording")
         self._recording_start_time = None
         try:
-            if self._live:
-                self.recorder.stop_streaming()
-            else:
-                self._audio_path = self.recorder.stop_recording()
+            self._audio_path = self.recorder.stop_recording()
             self.state_machine.set_state(State.TRANSCRIBING)
             notify_recording_stopped()
             # Immediately trigger transcription
@@ -228,10 +205,7 @@ class STTDaemon:
             # Ensure recorder is stopped on error
             if self.recorder.is_recording():
                 try:
-                    if self._live:
-                        self.recorder.stop_streaming()
-                    else:
-                        self.recorder.stop_recording()
+                    self.recorder.stop_recording()
                 except Exception:
                     self._logger.exception("Failed to force-stop recorder")
             self.state_machine.transition(Event.ERROR)
@@ -239,20 +213,6 @@ class STTDaemon:
 
     def _transcribe_audio(self) -> None:
         """Transcribe audio (TRANSCRIBING → TYPING)."""
-        if self._live:
-            # Live mode: collect result from real-time streaming transcription
-            self._logger.info("Collecting streaming transcription result")
-            try:
-                self._transcribed_text = self.transcriber.stop_streaming()
-                self.state_machine.set_state(State.TYPING)
-                self.state_machine.transition(Event.TRANSCRIPTION_COMPLETE)
-            except Exception:
-                self._logger.exception("Streaming transcription failed")
-                notify_error("Transcription failed")
-                self.state_machine.transition(Event.ERROR)
-                self.state_machine.set_state(State.IDLE)
-            return
-
         if not self._audio_path:
             self._logger.error("No audio file to transcribe")
             notify_error("No audio file to transcribe")
@@ -382,14 +342,11 @@ class STTDaemon:
         # Stop recording if in progress
         if self.recorder.is_recording():
             try:
-                if self._live:
-                    self.recorder.stop_streaming()
-                else:
-                    self.recorder.stop_recording()
+                self.recorder.stop_recording()
             except Exception:
                 self._logger.exception("Error stopping recorder")
 
-        # Release transcriber resources (connection pools, event loops)
+        # Release transcriber resources
         try:
             self.transcriber.close()
         except Exception:
@@ -405,7 +362,6 @@ def run(
     format_output: bool = False,
     instruction_keyword: str | None = None,
     ask_keyword: str | None = None,
-    live: bool = False,
 ) -> NoReturn:
     """Run the STT daemon.
 
@@ -414,7 +370,6 @@ def run(
         format_output: Enable plain-text formatting of refined output.
         instruction_keyword: Keyword to separate content from AI instructions.
         ask_keyword: Keyword at start of speech to trigger AI query mode.
-        live: Enable Live API streaming transcription.
 
     """
     # Setup logging
@@ -441,7 +396,6 @@ def run(
             format_output=format_output,
             instruction_keyword=instruction_keyword,
             ask_keyword=ask_keyword,
-            live=live,
         )
     except ValueError:
         logger.exception("Configuration error")
